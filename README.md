@@ -113,7 +113,9 @@ make V=s -j$(nproc)
 
 ---
 
-CatWrt base 和 LEDE 库冲突，保留 LEDE 源码更新放弃 CatWrt 修改；
+## 冲突
+
+**CatWrt base 和 LEDE 库冲突，保留 LEDE 源码更新放弃 CatWrt 修改；**
 
 ```bash
 git fetch origin
