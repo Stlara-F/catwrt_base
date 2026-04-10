@@ -3,7 +3,7 @@ name: Build CatWrt Docker Image
 on:
   workflow_dispatch:          # 允许手动触发
   schedule:
-    - cron: '0 0 * * 0'       # 每周日 UTC 0 点自动编译一次（可按需调整）
+    - cron: '0 0 * * 0'       # 每周日 UTC 0 点自动编译（可按需调整）
 
 env:
   LEDE_REPO: https://github.com/coolsnowwolf/lede.git
@@ -16,11 +16,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. 检出代码（包含你的 Dockerfile 和 entrypoint）
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. 设置编译缓存，大幅加快后续构建速度
+      # 设置编译缓存
       - name: Cache LEDE build
         uses: actions/cache@v4
         with:
@@ -33,28 +32,28 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-lede-
 
-      # 3. 安装编译依赖（直接使用 catwrt_base README 中的命令）
+      # 安装完整的编译依赖（补充了 bc、pciutils、libpam0g-dev、libunistring-dev 等）
       - name: Install build dependencies
         run: |
           sudo apt update -y
           sudo apt full-upgrade -y
-          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+          sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint bc binutils bison build-essential \
             bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
             genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
-            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev \
-            libreadline-dev libssl-dev libtool llvm lrzsz msmtp ninja-build p7zip p7zip-full patch pkgconf \
-            python3 python3-pyelftools python3-setuptools qemu-utils rsync scons squashfs-tools subversion \
-            swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpam0g-dev \
+            libpci-dev libpython3-dev libreadline-dev libssl-dev libtool libunistring-dev llvm lrzsz msmtp \
+            ninja-build p7zip p7zip-full patch pciutils pkgconf python3 python3-pyelftools python3-setuptools \
+            qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
+            xmlto xxd zlib1g-dev
 
-      # 4. 克隆 Lean's LEDE 源码
+      # 克隆 LEDE 源码
       - name: Clone LEDE source
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           cd lede
-          # 更新 feeds 配置文件（可选）
           sed -i 's/#src-git helloworld/src-git helloworld/g' feeds.conf.default
 
-      # 5. 更新 feeds 并下载软件包源码
+      # 更新 feeds 并下载软件包
       - name: Update feeds and download packages
         run: |
           cd lede
@@ -63,54 +62,61 @@ jobs:
           make defconfig
           make download -j$(nproc)
 
-      # 6. 首次编译（生成基础环境，确保后续定制脚本能正常运行）
-      - name: First make (prepare environment)
+      # ---------- 关键修复 ----------
+      # 先编译工具链和基础工具，确保 conf 能成功构建
+      - name: Build tools and toolchain
         run: |
           cd lede
-          make -j$(nproc) V=s || true   # 即使失败也继续，有时首次编译会因缺失某些依赖报错但环境已就绪
+          make tools/compile -j$(nproc) V=s
+          make toolchain/compile -j$(nproc) V=s
 
-      # 7. 克隆 catwrt_base 并应用定制脚本
+      # 然后进行一次基础编译（不带 catwrt 定制），验证环境完整性
+      - name: First minimal build
+        run: |
+          cd lede
+          make -j$(nproc) V=s || true   # 允许失败，但通常此时应能成功生成固件
+
+      # ---------- 现在再应用 catwrt_base 定制 ----------
       - name: Apply CatWrt customization
         run: |
           cd $HOME
           git clone $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           chmod +x pull.sh main.sh
-          # 执行更新插件脚本
+          # 注意：pull.sh 和 main.sh 需要使用 sudo，因为会往系统目录写文件
           sudo bash pull.sh
-          # 刷写 CatWrt 版本号和关键文件
           sudo bash main.sh
 
-      # 8. 最终编译（生成带有 CatWrt 定制的固件）
+      # 最终编译（生成带有 CatWrt 定制的固件）
       - name: Final build
         run: |
           cd lede
           # 如果需要自定义配置，可在此处通过 sed 修改 .config
-          # 例如：开启 Docker 内核支持等
           make -j$(nproc) V=s
 
-      # 9. 准备 Docker 构建上下文
+      # 准备 Docker 构建上下文
       - name: Prepare Docker context
         run: |
-          # 复制生成的 rootfs.tar.gz 到工作目录
-          cp lede/bin/targets/${{ env.TARGET_ARCH }}/generic/openwrt-${{ env.TARGET_ARCH }}-generic-rootfs.tar.gz rootfs.tar.gz || \
-          cp lede/bin/targets/${{ env.TARGET_ARCH }}/generic/openwrt-*-rootfs.tar.gz rootfs.tar.gz || \
-          echo "Rootfs not found, check target path"
-          # 确保 entrypoint 脚本存在且可执行
+          # 查找生成的 rootfs.tar.gz 文件（路径可能因架构略有不同）
+          ROOTFS_PATH=$(find lede/bin/targets -name "openwrt-*-rootfs.tar.gz" | head -n 1)
+          if [ -z "$ROOTFS_PATH" ]; then
+            echo "Rootfs not found, check target path"
+            exit 1
+          fi
+          cp "$ROOTFS_PATH" rootfs.tar.gz
           if [ -f docker-entrypoint.sh ]; then
             chmod +x docker-entrypoint.sh
           fi
-          # 列出文件确认
           ls -la
 
-      # 10. 登录 Docker Hub
+      # 登录 Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 11. 构建并推送 Docker 镜像
+      # 构建并推送镜像
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
