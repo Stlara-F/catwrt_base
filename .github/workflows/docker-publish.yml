@@ -11,7 +11,6 @@ env:
   CATWRT_BASE_REPO: https://github.com/miaoermua/catwrt_base.git
   TARGET_ARCH: x86_64
   DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt
-  # 修复CI终端环境问题，设置终端类型
   TERM: xterm
 
 jobs:
@@ -50,9 +49,14 @@ jobs:
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           cd lede
-          # 修复feeds分支匹配：所有feeds都使用master分支，匹配lede master
-          sed -i 's/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;openwrt-23.05/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;master/g' feeds.conf.default
-          sed -i 's/#src-git helloworld/src-git helloworld https:\/\/github.com\/fw876\/helloworld.git;master/g' feeds.conf.default
+          # 彻底重写feeds.conf，避免重复源，所有feeds统一使用master分支
+          cat > feeds.conf.default <<EOF
+          src-git packages https://github.com/coolsnowwolf/packages;master
+          src-git luci https://github.com/coolsnowwolf/luci;master
+          src-git routing https://github.com/coolsnowwolf/routing;master
+          src-git telephony https://github.com/coolsnowwolf/telephony;master
+          src-git helloworld https://github.com/fw876/helloworld;master
+          EOF
 
       - name: Update feeds
         run: |
@@ -64,24 +68,16 @@ jobs:
           ./scripts/feeds install lm-sensors wsdd2 luci-app-ksmbd luci-app-samba ddns-scripts wget-ssl
           ./scripts/feeds install luci-compat bash jq ntpdate smartmontools coreutils libxml2
           ./scripts/feeds install liblzma libpcre2 libnetsnmp libcurl libtins libyaml-cpp glib2 libgpiod
-          ./scripts/feeds install -f libxcrypt # 强制覆盖冲突核心包
+          ./scripts/feeds install -f libxcrypt
 
-      # ---------- 修复顺序：先执行defconfig生成.config，避免触发menuconfig ----------
-      - name: Generate default config
-        run: |
-          cd lede
-          # 先执行defconfig，生成.config，避免后续make触发交互式menuconfig
-          make defconfig
-
-      # ---------- 现在再构建host工具，此时.config已存在，不会触发menuconfig ----------
-      - name: Build host tools and conf
+      # ---------- 核心修复：先清理TARGET_ARCH，手动构建conf工具，彻底避免污染 ----------
+      - name: Build conf tool first
         id: build_conf
         run: |
           cd lede
-          # 临时取消TARGET_ARCH，避免污染host工具编译
+          # 彻底清理污染的环境变量，避免影响conf编译
           unset TARGET_ARCH
-          make tools/install -j$(nproc) V=s
-          make toolchain/install -j$(nproc) V=s
+          # 先手动构建conf工具，此时没有TARGET_ARCH污染，编译不会出错
           make -C scripts/config conf V=s 2>&1 | tee conf_build.log
           if [ -f scripts/config/conf ]; then
             echo "CONF_BUILT=success" >> $GITHUB_OUTPUT
@@ -102,10 +98,25 @@ jobs:
           echo "❌ conf tool failed to build. Please check the uploaded artifact 'conf-build-log' for details."
           exit 1
 
+      # ---------- 现在conf已经构建完成，恢复TARGET_ARCH，执行defconfig，不会再触发conf编译了 ----------
+      - name: Generate default config
+        run: |
+          cd lede
+          # 恢复TARGET_ARCH，此时conf已经存在，defconfig不会再构建conf，不会污染
+          export TARGET_ARCH=$TARGET_ARCH
+          make defconfig
+
+      # ---------- 现在再构建host工具，此时conf已经存在，不会触发交互式menuconfig ----------
+      - name: Build host tools
+        run: |
+          cd lede
+          unset TARGET_ARCH
+          make tools/install -j$(nproc) V=s
+          make toolchain/install -j$(nproc) V=s
+
       - name: Download packages
         run: |
           cd lede
-          # 恢复TARGET_ARCH，配置目标架构
           export TARGET_ARCH=$TARGET_ARCH
           # 重试3次下载，避免网络波动
           for i in 1 2 3; do make download -j$(nproc) && break; sleep 10; done
