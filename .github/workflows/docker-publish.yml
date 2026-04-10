@@ -11,6 +11,8 @@ env:
   CATWRT_BASE_REPO: https://github.com/miaoermua/catwrt_base.git
   TARGET_ARCH: x86_64
   DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt
+  # 修复CI终端环境问题，设置终端类型
+  TERM: xterm
 
 jobs:
   build:
@@ -27,7 +29,6 @@ jobs:
             lede/staging_dir
             lede/tmp
             lede/dl
-          # 优化缓存key，添加架构和分支标记，避免缓存污染
           key: ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ hashFiles('lede/feeds.conf.default') }}
           restore-keys: |
             ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-
@@ -43,31 +44,41 @@ jobs:
             libpci-dev libpython3-dev libreadline-dev libssl-dev libtool libunistring-dev llvm lrzsz msmtp \
             ninja-build p7zip p7zip-full patch pciutils pkgconf python3 python3-pyelftools python3-setuptools \
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
-            xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev
+            xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev libtirpc-dev libaio-dev
 
       - name: Clone LEDE source
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           cd lede
-          # 修复feeds分支匹配：lede master 对应 luci master，避免版本不匹配
-          sed -i 's/#src-git helloworld/src-git helloworld https:\/\/github.com\/fw876\/helloworld.git/g' feeds.conf.default
+          # 修复feeds分支匹配：所有feeds都使用master分支，匹配lede master
           sed -i 's/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;openwrt-23.05/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;master/g' feeds.conf.default
+          sed -i 's/#src-git helloworld/src-git helloworld https:\/\/github.com\/fw876\/helloworld.git;master/g' feeds.conf.default
 
       - name: Update feeds
         run: |
           cd lede
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          # 自动安装缺失的基础依赖，解决依赖校验警告
-          ./scripts/feeds install bc pciutils libpam libunistring csstidy luasrcdiet
-          ./scripts/feeds install -f libxcrypt # 强制覆盖核心包，解决覆盖警告
+          # 彻底解决依赖缺失：手动安装所有缺失的依赖包
+          ./scripts/feeds install bc pciutils libpam libunistring csstidy luasrcdiet libaio libtirpc
+          ./scripts/feeds install lm-sensors wsdd2 luci-app-ksmbd luci-app-samba ddns-scripts wget-ssl
+          ./scripts/feeds install luci-compat bash jq ntpdate smartmontools coreutils libxml2
+          ./scripts/feeds install liblzma libpcre2 libnetsnmp libcurl libtins libyaml-cpp glib2 libgpiod
+          ./scripts/feeds install -f libxcrypt # 强制覆盖冲突核心包
 
-      # ---------- 修复核心：构建host工具时，临时取消TARGET_ARCH环境变量，避免污染编译命令 ----------
+      # ---------- 修复顺序：先执行defconfig生成.config，避免触发menuconfig ----------
+      - name: Generate default config
+        run: |
+          cd lede
+          # 先执行defconfig，生成.config，避免后续make触发交互式menuconfig
+          make defconfig
+
+      # ---------- 现在再构建host工具，此时.config已存在，不会触发menuconfig ----------
       - name: Build host tools and conf
         id: build_conf
         run: |
           cd lede
-          # 临时取消TARGET_ARCH，避免它被错误传递给gcc，导致编译参数错误
+          # 临时取消TARGET_ARCH，避免污染host工具编译
           unset TARGET_ARCH
           make tools/install -j$(nproc) V=s
           make toolchain/install -j$(nproc) V=s
@@ -91,13 +102,11 @@ jobs:
           echo "❌ conf tool failed to build. Please check the uploaded artifact 'conf-build-log' for details."
           exit 1
 
-      # ---------- 恢复TARGET_ARCH，进行目标架构的编译 ----------
       - name: Download packages
         run: |
           cd lede
           # 恢复TARGET_ARCH，配置目标架构
           export TARGET_ARCH=$TARGET_ARCH
-          make defconfig
           # 重试3次下载，避免网络波动
           for i in 1 2 3; do make download -j$(nproc) && break; sleep 10; done
 
@@ -112,7 +121,6 @@ jobs:
           git clone $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           chmod +x pull.sh main.sh
-          # 修复权限，避免sudo的权限问题
           sudo -E bash pull.sh
           sudo -E bash main.sh
 
@@ -150,7 +158,6 @@ jobs:
             ${{ env.DOCKER_IMAGE_NAME }}:latest
             ${{ env.DOCKER_IMAGE_NAME }}:${{ github.run_number }}
             ${{ env.DOCKER_IMAGE_NAME }}:${{ env.TARGET_ARCH }}
-          # 添加镜像标签，方便识别
           labels: |
             org.opencontainers.image.title=CatWrt
             org.opencontainers.image.description=CatWrt Docker Image
