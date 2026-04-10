@@ -58,8 +58,8 @@ jobs:
           make defconfig
           make download -j$(nproc)
 
-      # 强制编译关键 host 工具，特别是 bc 和 patch
-      - name: Build essential host tools
+      # ---------- 新增：单独编译 conf 并捕获错误 ----------
+      - name: Build prerequisites for conf
         run: |
           cd lede
           make tools/bc/compile -j1 V=s
@@ -67,13 +67,38 @@ jobs:
           make tools/compile -j$(nproc) V=s
           make toolchain/compile -j$(nproc) V=s
 
-      # 使用单线程输出详细错误，定位 conf 编译失败的具体原因
-      - name: First minimal build (verbose)
+      - name: Build conf tool with verbose output
+        id: build_conf
+        continue-on-error: true   # 即使失败也继续，以便上传日志
+        run: |
+          cd lede
+          make -C scripts/config conf V=s 2>&1 | tee conf_build.log
+          # 检查 conf 是否生成
+          if [ -f scripts/config/conf ]; then
+            echo "CONF_BUILT=success" >> $GITHUB_OUTPUT
+          else
+            echo "CONF_BUILT=failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload conf build log on failure
+        if: steps.build_conf.outputs.CONF_BUILT == 'failed'
+        uses: actions/upload-artifact@v4
+        with:
+          name: conf-build-log
+          path: lede/conf_build.log
+
+      - name: Fail job if conf build failed
+        if: steps.build_conf.outputs.CONF_BUILT == 'failed'
+        run: |
+          echo "conf tool failed to build. Please download the artifact 'conf-build-log' and provide it for further analysis."
+          exit 1
+
+      # ---------- 如果 conf 编译成功，继续后续流程 ----------
+      - name: First minimal build (optional)
         run: |
           cd lede
           make -j1 V=s || true
 
-      # 应用 CatWrt 定制（若基础编译成功，此步骤才能正常运行）
       - name: Apply CatWrt customization
         run: |
           cd $HOME
@@ -83,7 +108,6 @@ jobs:
           sudo bash pull.sh
           sudo bash main.sh
 
-      # 最终编译（单线程输出便于查看错误）
       - name: Final build
         run: |
           cd lede
