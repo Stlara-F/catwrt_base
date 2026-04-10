@@ -27,9 +27,10 @@ jobs:
             lede/staging_dir
             lede/tmp
             lede/dl
-          key: ${{ runner.os }}-lede-${{ hashFiles('lede/feeds.conf.default') }}
+          # 优化缓存key，添加架构和分支标记，避免缓存污染
+          key: ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ hashFiles('lede/feeds.conf.default') }}
           restore-keys: |
-            ${{ runner.os }}-lede-
+            ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-
 
       - name: Install build dependencies
         run: |
@@ -48,22 +49,28 @@ jobs:
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           cd lede
-          sed -i 's/#src-git helloworld/src-git helloworld/g' feeds.conf.default
+          # 修复feeds分支匹配：lede master 对应 luci master，避免版本不匹配
+          sed -i 's/#src-git helloworld/src-git helloworld https:\/\/github.com\/fw876\/helloworld.git/g' feeds.conf.default
+          sed -i 's/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;openwrt-23.05/src-git luci https:\/\/github.com\/coolsnowwolf\/luci.git;master/g' feeds.conf.default
 
       - name: Update feeds
         run: |
           cd lede
           ./scripts/feeds update -a
           ./scripts/feeds install -a
+          # 自动安装缺失的基础依赖，解决依赖校验警告
+          ./scripts/feeds install bc pciutils libpam libunistring csstidy luasrcdiet
+          ./scripts/feeds install -f libxcrypt # 强制覆盖核心包，解决覆盖警告
 
-      # ---------- 提前构建 conf 工具，避免后续步骤因它失败而中断 ----------
+      # ---------- 修复核心：构建host工具时，临时取消TARGET_ARCH环境变量，避免污染编译命令 ----------
       - name: Build host tools and conf
         id: build_conf
-        continue-on-error: true
         run: |
           cd lede
-          make tools/install -j1 V=s
-          make toolchain/install -j1 V=s
+          # 临时取消TARGET_ARCH，避免它被错误传递给gcc，导致编译参数错误
+          unset TARGET_ARCH
+          make tools/install -j$(nproc) V=s
+          make toolchain/install -j$(nproc) V=s
           make -C scripts/config conf V=s 2>&1 | tee conf_build.log
           if [ -f scripts/config/conf ]; then
             echo "CONF_BUILT=success" >> $GITHUB_OUTPUT
@@ -84,17 +91,20 @@ jobs:
           echo "❌ conf tool failed to build. Please check the uploaded artifact 'conf-build-log' for details."
           exit 1
 
-      # ---------- conf 构建成功后，继续正常流程 ----------
+      # ---------- 恢复TARGET_ARCH，进行目标架构的编译 ----------
       - name: Download packages
         run: |
           cd lede
+          # 恢复TARGET_ARCH，配置目标架构
+          export TARGET_ARCH=$TARGET_ARCH
           make defconfig
-          make download -j$(nproc)
+          # 重试3次下载，避免网络波动
+          for i in 1 2 3; do make download -j$(nproc) && break; sleep 10; done
 
       - name: First minimal build (optional)
         run: |
           cd lede
-          make -j1 V=s || true
+          make -j$(nproc) V=s || true
 
       - name: Apply CatWrt customization
         run: |
@@ -102,13 +112,14 @@ jobs:
           git clone $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           chmod +x pull.sh main.sh
-          sudo bash pull.sh
-          sudo bash main.sh
+          # 修复权限，避免sudo的权限问题
+          sudo -E bash pull.sh
+          sudo -E bash main.sh
 
       - name: Final build
         run: |
           cd lede
-          make -j1 V=s
+          make -j$(nproc) V=s
 
       - name: Prepare Docker context
         run: |
@@ -138,3 +149,10 @@ jobs:
           tags: |
             ${{ env.DOCKER_IMAGE_NAME }}:latest
             ${{ env.DOCKER_IMAGE_NAME }}:${{ github.run_number }}
+            ${{ env.DOCKER_IMAGE_NAME }}:${{ env.TARGET_ARCH }}
+          # 添加镜像标签，方便识别
+          labels: |
+            org.opencontainers.image.title=CatWrt
+            org.opencontainers.image.description=CatWrt Docker Image
+            org.opencontainers.image.source=https://github.com/miaoermua/catwrt_base
+            org.opencontainers.image.version=${{ github.run_number }}
