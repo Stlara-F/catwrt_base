@@ -1,15 +1,15 @@
 name: Build CatWrt Docker Image
 
 on:
-  workflow_dispatch:          # 允许手动触发
+  workflow_dispatch:
   schedule:
-    - cron: '0 0 * * 0'       # 每周日 UTC 0 点自动编译（可按需调整）
+    - cron: '0 0 * * 0'
 
 env:
   LEDE_REPO: https://github.com/coolsnowwolf/lede.git
   LEDE_BRANCH: master
   CATWRT_BASE_REPO: https://github.com/miaoermua/catwrt_base.git
-  TARGET_ARCH: x86_64         # 目标架构，可根据需要修改为 aarch64 等
+  TARGET_ARCH: x86_64
   DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt
 
 jobs:
@@ -19,7 +19,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 设置编译缓存
       - name: Cache LEDE build
         uses: actions/cache@v4
         with:
@@ -32,7 +31,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-lede-
 
-      # 安装完整的编译依赖（补充了 bc、pciutils、libpam0g-dev、libunistring-dev 等）
       - name: Install build dependencies
         run: |
           sudo apt update -y
@@ -46,14 +44,12 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
             xmlto xxd zlib1g-dev
 
-      # 克隆 LEDE 源码
       - name: Clone LEDE source
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
           cd lede
           sed -i 's/#src-git helloworld/src-git helloworld/g' feeds.conf.default
 
-      # 更新 feeds 并下载软件包
       - name: Update feeds and download packages
         run: |
           cd lede
@@ -62,42 +58,39 @@ jobs:
           make defconfig
           make download -j$(nproc)
 
-      # ---------- 关键修复 ----------
-      # 先编译工具链和基础工具，确保 conf 能成功构建
-      - name: Build tools and toolchain
+      # 强制编译关键 host 工具，特别是 bc 和 patch
+      - name: Build essential host tools
         run: |
           cd lede
+          make tools/bc/compile -j1 V=s
+          make tools/patch/compile -j1 V=s
           make tools/compile -j$(nproc) V=s
           make toolchain/compile -j$(nproc) V=s
 
-      # 然后进行一次基础编译（不带 catwrt 定制），验证环境完整性
-      - name: First minimal build
+      # 使用单线程输出详细错误，定位 conf 编译失败的具体原因
+      - name: First minimal build (verbose)
         run: |
           cd lede
-          make -j$(nproc) V=s || true   # 允许失败，但通常此时应能成功生成固件
+          make -j1 V=s || true
 
-      # ---------- 现在再应用 catwrt_base 定制 ----------
+      # 应用 CatWrt 定制（若基础编译成功，此步骤才能正常运行）
       - name: Apply CatWrt customization
         run: |
           cd $HOME
           git clone $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           chmod +x pull.sh main.sh
-          # 注意：pull.sh 和 main.sh 需要使用 sudo，因为会往系统目录写文件
           sudo bash pull.sh
           sudo bash main.sh
 
-      # 最终编译（生成带有 CatWrt 定制的固件）
+      # 最终编译（单线程输出便于查看错误）
       - name: Final build
         run: |
           cd lede
-          # 如果需要自定义配置，可在此处通过 sed 修改 .config
-          make -j$(nproc) V=s
+          make -j1 V=s
 
-      # 准备 Docker 构建上下文
       - name: Prepare Docker context
         run: |
-          # 查找生成的 rootfs.tar.gz 文件（路径可能因架构略有不同）
           ROOTFS_PATH=$(find lede/bin/targets -name "openwrt-*-rootfs.tar.gz" | head -n 1)
           if [ -z "$ROOTFS_PATH" ]; then
             echo "Rootfs not found, check target path"
@@ -109,14 +102,12 @@ jobs:
           fi
           ls -la
 
-      # 登录 Docker Hub
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 构建并推送镜像
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
