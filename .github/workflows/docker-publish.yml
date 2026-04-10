@@ -42,7 +42,7 @@ jobs:
             libpci-dev libpython3-dev libreadline-dev libssl-dev libtool libunistring-dev llvm lrzsz msmtp \
             ninja-build p7zip p7zip-full patch pciutils pkgconf python3 python3-pyelftools python3-setuptools \
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
-            xmlto xxd zlib1g-dev
+            xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev
 
       - name: Clone LEDE source
         run: |
@@ -50,30 +50,21 @@ jobs:
           cd lede
           sed -i 's/#src-git helloworld/src-git helloworld/g' feeds.conf.default
 
-      - name: Update feeds and download packages
+      - name: Update feeds
         run: |
           cd lede
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          make defconfig
-          make download -j$(nproc)
 
-      # ---------- 新增：单独编译 conf 并捕获错误 ----------
-      - name: Build prerequisites for conf
-        run: |
-          cd lede
-          make tools/bc/compile -j1 V=s
-          make tools/patch/compile -j1 V=s
-          make tools/compile -j$(nproc) V=s
-          make toolchain/compile -j$(nproc) V=s
-
-      - name: Build conf tool with verbose output
+      # ---------- 提前构建 conf 工具，避免后续步骤因它失败而中断 ----------
+      - name: Build host tools and conf
         id: build_conf
-        continue-on-error: true   # 即使失败也继续，以便上传日志
+        continue-on-error: true
         run: |
           cd lede
+          make tools/install -j1 V=s
+          make toolchain/install -j1 V=s
           make -C scripts/config conf V=s 2>&1 | tee conf_build.log
-          # 检查 conf 是否生成
           if [ -f scripts/config/conf ]; then
             echo "CONF_BUILT=success" >> $GITHUB_OUTPUT
           else
@@ -90,10 +81,16 @@ jobs:
       - name: Fail job if conf build failed
         if: steps.build_conf.outputs.CONF_BUILT == 'failed'
         run: |
-          echo "conf tool failed to build. Please download the artifact 'conf-build-log' and provide it for further analysis."
+          echo "❌ conf tool failed to build. Please check the uploaded artifact 'conf-build-log' for details."
           exit 1
 
-      # ---------- 如果 conf 编译成功，继续后续流程 ----------
+      # ---------- conf 构建成功后，继续正常流程 ----------
+      - name: Download packages
+        run: |
+          cd lede
+          make defconfig
+          make download -j$(nproc)
+
       - name: First minimal build (optional)
         run: |
           cd lede
