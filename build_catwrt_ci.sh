@@ -84,6 +84,21 @@ fix_lede_permissions() {
 
 # ---------------------------- 预检 ----------------------------
 check_env() {
+    # Docker 模式：跳过某些检查
+    if [[ "${CATWRT_DOCKER_MODE:-}" == "1" ]]; then
+        log INFO "运行在 Docker 模式中，跳过宿主机检查"
+        # Docker 中不需要检查磁盘空间（由宿主机管理），但保留基本检查
+        [[ -d "/home" ]] || die "/home 目录不存在"
+        mkdir -p "$LOG_DIR"
+        id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
+        # 跳过 apt 安装检查（镜像已包含）
+        return 0
+    fi
+    
+    # 原有检查逻辑...
+    [[ $EUID -eq 0 ]] || die "必须使用 root 运行"
+    # ... 其余不变
+
     [[ $EUID -eq 0 ]] || die "必须使用 root 运行"
     [[ -d "/home" ]] || die "/home 目录不存在"
     mkdir -p "$LOG_DIR"
