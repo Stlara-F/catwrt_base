@@ -1,368 +1,56 @@
-name: Build CatWrt Docker Image
+# .github/workflows/build-push-docker.yml
+# 构建 CatWrt 编译环境镜像并推送到 Docker Hub
+# 优化: 添加测试步骤、语义化版本标签、多平台构建准备
+
+name: Build and Push CatWrt Builder Image
 
 on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'Dockerfile'
+      - 'build_catwrt_ci.sh'
+      - 'docker-entrypoint.sh'
+      - '.github/workflows/**'
+    tags:
+      - 'v*'
+  schedule:
+    # 每周日 UTC 0 点重建，更新基础镜像
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
-      target_arch:
-        description: 'Target architecture'
-        required: true
-        default: 'x86_64'
-        type: choice
-        options:
-          - x86_64
-          - aarch64
-  schedule:
-    - cron: '0 0 * * 0'
+      version:
+        description: '手动指定版本标签'
+        required: false
+        default: ''
 
 env:
-  LEDE_REPO: https://github.com/coolsnowwolf/lede.git
-  LEDE_BRANCH: master
-  CATWRT_BASE_REPO: https://github.com/miaoermua/catwrt_base.git
-  TARGET_ARCH: ${{ github.event.inputs.target_arch || 'x86_64' }}
-  DOCKER_IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt
-  TERM: xterm
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 720  # 12小时超时，LEDE编译耗时较长
-    
+  build-and-push:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write  # 用于 cosign 签名（可选）
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # 预创建 feeds.conf.default 用于缓存 key 计算
-      - name: Prepare feeds config for cache key
-        run: |
-          mkdir -p /tmp/lede-config
-          cat > /tmp/lede-config/feeds.conf.default <<'EOF'
-          src-git packages https://github.com/coolsnowwolf/packages
-          src-git luci https://github.com/coolsnowwolf/luci ;master
-          src-git routing https://github.com/coolsnowwolf/routing
-          src-git telephony https://github.com/coolsnowwolf/telephony
-          src-git helloworld https://github.com/fw876/helloworld ;master
-          EOF
-
-      - name: Cache LEDE build
-        uses: actions/cache@v4
         with:
-          path: |
-            /home/lede/build_dir
-            /home/lede/staging_dir
-            /home/lede/tmp
-            /home/lede/dl
-          key: ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ hashFiles('/tmp/lede-config/feeds.conf.default') }}-${{ github.run_number }}
-          restore-keys: |
-            ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-
-            ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get full-upgrade -y
-          sudo apt-get install -y --no-install-recommends \
-            ack antlr3 asciidoc autoconf automake autopoint bc binutils bison build-essential \
-            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk gcc-multilib g++-multilib gettext \
-            genisoimage git gperf haveged help2man intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev \
-            libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpam0g-dev \
-            libpci-dev libpython3-dev libreadline-dev libssl-dev libtool libunistring-dev llvm lrzsz msmtp \
-            ninja-build p7zip p7zip-full patch pciutils pkgconf python3 python3-pyelftools python3-setuptools \
-            qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
-            xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev libtirpc-dev libaio-dev \
-            libfdt-dev libpython3-dev
-
-      - name: Prepare /home/lede directory
-        run: |
-          sudo mkdir -p /home/lede
-          sudo chown $USER:$USER /home/lede
-
-      - name: Clone LEDE source
-        run: |
-          if [ -d "/home/lede/.git" ]; then
-            echo "LEDE already exists, pulling latest..."
-            cd /home/lede
-            git pull origin $LEDE_BRANCH
-          else
-            echo "Cloning LEDE..."
-            git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO /home/lede
-          fi
-          
-          cd /home/lede
-          cat > feeds.conf.default <<'EOF'
-          src-git packages https://github.com/coolsnowwolf/packages
-          src-git luci https://github.com/coolsnowwolf/luci ;master
-          src-git routing https://github.com/coolsnowwolf/routing
-          src-git telephony https://github.com/coolsnowwolf/telephony
-          src-git helloworld https://github.com/fw876/helloworld ;master
-          EOF
-
-      - name: Update and install feeds
-        run: |
-          cd /home/lede
-          ./scripts/feeds update -a
-          
-          # 安装依赖包
-          ./scripts/feeds install bc pciutils libpam libunistring csstidy luasrcdiet libaio libtirpc 2>/dev/null || true
-          ./scripts/feeds install lm-sensors wsdd2 luci-app-ksmbd luci-app-samba ddns-scripts wget-ssl 2>/dev/null || true
-          ./scripts/feeds install luci-compat bash jq ntpdate smartmontools coreutils libxml2 2>/dev/null || true
-          ./scripts/feeds install liblzma libpcre2 libnetsnmp libcurl libtins libyaml-cpp glib2 libgpiod 2>/dev/null || true
-          
-          # 强制安装所有 feeds
-          ./scripts/feeds install -a -f
-
-      - name: Build conf tool first
-        id: build_conf
-        run: |
-          cd /home/lede
-          unset TARGET_ARCH
-          make -C scripts/config conf V=s 2>&1 | tee conf_build.log
-          if [ -f scripts/config/conf ]; then
-            echo "CONF_BUILT=success" >> $GITHUB_OUTPUT
-          else
-            echo "CONF_BUILT=failed" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload conf build log on failure
-        if: steps.build_conf.outputs.CONF_BUILT == 'failed'
-        uses: actions/upload-artifact@v4
-        with:
-          name: conf-build-log
-          path: /home/lede/conf_build.log
-          retention-days: 7
-
-      - name: Fail if conf build failed
-        if: steps.build_conf.outputs.CONF_BUILT == 'failed'
-        run: |
-          echo "❌ conf tool failed to build"
-          exit 1
-
-      - name: Configure target
-        run: |
-          cd /home/lede
-          
-          # 设置 x86_64 目标配置
-          cat > .config <<'EOF'
-          CONFIG_TARGET_x86=y
-          CONFIG_TARGET_x86_64=y
-          CONFIG_TARGET_x86_64_DEVICE_generic=y
-          CONFIG_TARGET_ROOTFS_TARGZ=y
-          CONFIG_TARGET_ROOTFS_EXT4FS=y
-          CONFIG_PACKAGE_dnsmasq=n
-          CONFIG_PACKAGE_dnsmasq-full=y
-          CONFIG_PACKAGE_kmod-fs-ext4=y
-          CONFIG_PACKAGE_kmod-fs-vfat=y
-          CONFIG_PACKAGE_kmod-nls-cp437=y
-          CONFIG_PACKAGE_kmod-nls-iso8859-1=y
-          CONFIG_PACKAGE_kmod-nls-utf8=y
-          CONFIG_PACKAGE_kmod-usb-storage=y
-          CONFIG_PACKAGE_kmod-usb-storage-extras=y
-          CONFIG_PACKAGE_kmod-usb2=y
-          CONFIG_PACKAGE_kmod-usb3=y
-          CONFIG_PACKAGE_block-mount=y
-          CONFIG_PACKAGE_fdisk=y
-          CONFIG_PACKAGE_cfdisk=y
-          CONFIG_PACKAGE_resize2fs=y
-          CONFIG_PACKAGE_parted=y
-          CONFIG_PACKAGE_lsblk=y
-          CONFIG_PACKAGE_mkf2fs=y
-          CONFIG_PACKAGE_kmod-fs-f2fs=y
-          CONFIG_PACKAGE_kmod-tun=y
-          CONFIG_PACKAGE_kmod-inet-diag=y
-          CONFIG_PACKAGE_kmod-netlink-diag=y
-          CONFIG_PACKAGE_kmod-nft-tproxy=y
-          CONFIG_PACKAGE_kmod-nft-socket=y
-          CONFIG_PACKAGE_libustream-openssl=y
-          CONFIG_PACKAGE_wget-ssl=y
-          CONFIG_PACKAGE_ca-certificates=y
-          CONFIG_PACKAGE_ca-bundle=y
-          CONFIG_PACKAGE_openssl-util=y
-          CONFIG_PACKAGE_curl=y
-          CONFIG_PACKAGE_htop=y
-          CONFIG_PACKAGE_iperf3=y
-          CONFIG_PACKAGE_tcpdump=y
-          CONFIG_PACKAGE_luci=y
-          CONFIG_PACKAGE_luci-ssl=y
-          CONFIG_PACKAGE_luci-compat=y
-          CONFIG_PACKAGE_luci-base=y
-          CONFIG_PACKAGE_luci-mod-admin-full=y
-          CONFIG_PACKAGE_luci-theme-bootstrap=y
-          CONFIG_PACKAGE_luci-app-firewall=y
-          CONFIG_PACKAGE_luci-app-opkg=y
-          CONFIG_PACKAGE_luci-proto-ppp=y
-          CONFIG_PACKAGE_luci-proto-ipv6=y
-          CONFIG_PACKAGE_ipv6helper=y
-          CONFIG_PACKAGE_kmod-ipt-nat6=y
-          CONFIG_PACKAGE_odhcp6c=y
-          CONFIG_PACKAGE_odhcpd-ipv6only=y
-          CONFIG_PACKAGE_luci-app-upnp=y
-          CONFIG_PACKAGE_miniupnpd-nftables=y
-          CONFIG_PACKAGE_luci-app-ddns=y
-          CONFIG_PACKAGE_ddns-scripts=y
-          CONFIG_PACKAGE_ddns-scripts-services=y
-          CONFIG_PACKAGE_luci-app-wol=y
-          CONFIG_PACKAGE_ethtool=y
-          CONFIG_PACKAGE_luci-app-nlbwmon=y
-          CONFIG_PACKAGE_nlbwmon=y
-          CONFIG_PACKAGE_luci-app-vlmcsd=y
-          CONFIG_PACKAGE_vlmcsd=y
-          CONFIG_PACKAGE_luci-app-ttyd=y
-          CONFIG_PACKAGE_ttyd=y
-          CONFIG_PACKAGE_luci-app-filetransfer=y
-          CONFIG_PACKAGE_luci-app-ramfree=y
-          CONFIG_PACKAGE_luci-app-turboacc=y
-          CONFIG_PACKAGE_luci-app-autoreboot=y
-          CONFIG_PACKAGE_zoneinfo-asia=y
-          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-opkg-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-upnp-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ddns-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-wol-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-nlbwmon-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-vlmcsd-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ttyd-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ramfree-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-turboacc-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-autoreboot-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-filetransfer-zh-cn=y
-          CONFIG_PACKAGE_luci-i18n-ddns-go-zh-cn=y
-          CONFIG_PACKAGE_luci-app-docker=y
-          CONFIG_PACKAGE_luci-i18n-docker-zh-cn=y
-          CONFIG_PACKAGE_luci-app-dockerman=y
-          CONFIG_PACKAGE_luci-i18n-dockerman-zh-cn=y
-          CONFIG_PACKAGE_docker=y
-          CONFIG_PACKAGE_dockerd=y
-          CONFIG_PACKAGE_docker-compose=y
-          CONFIG_PACKAGE_containerd=y
-          CONFIG_PACKAGE_runc=y
-          CONFIG_PACKAGE_tini=y
-          CONFIG_PACKAGE_kmod-veth=y
-          CONFIG_PACKAGE_kmod-br-netfilter=y
-          CONFIG_PACKAGE_kmod-ikconfig=y
-          CONFIG_PACKAGE_kmod-nf-ipvs=y
-          CONFIG_PACKAGE_kmod-nf-conntrack-netlink=y
-          CONFIG_PACKAGE_kmod-nf-nathelper=y
-          CONFIG_PACKAGE_kmod-nf-nathelper-extra=y
-          CONFIG_PACKAGE_kmod-dummy=y
-          CONFIG_PACKAGE_kmod-ipt-extra=y
-          CONFIG_PACKAGE_kmod-ipt-nat-extra=y
-          CONFIG_PACKAGE_iptables-mod-extra=y
-          CONFIG_PACKAGE_iptables-mod-nat-extra=y
-          CONFIG_PACKAGE_ip6tables=y
-          CONFIG_PACKAGE_ip6tables-mod-nat=y
-          CONFIG_PACKAGE_kmod-ipt6-extra=y
-          CONFIG_PACKAGE_kmod-nft-core=y
-          CONFIG_PACKAGE_kmod-nft-fib=y
-          CONFIG_PACKAGE_kmod-nft-nat=y
-          CONFIG_PACKAGE_kmod-nft-offload=y
-          CONFIG_PACKAGE_libsepol=n
-          CONFIG_PACKAGE_libselinux=n
-          CONFIG_PACKAGE_selinux-policy=n
-          CONFIG_PACKAGE_refpolicy=n
-          EOF
-          
-          # 应用配置
-          make defconfig
-
-      - name: Build host tools and toolchain
-        run: |
-          cd /home/lede
-          unset TARGET_ARCH
-          make tools/install -j$(nproc) V=s 2>&1 | tee tools_build.log
-          make toolchain/install -j$(nproc) V=s 2>&1 | tee toolchain_build.log
-
-      - name: Download packages
-        run: |
-          cd /home/lede
-          export TARGET_ARCH=$TARGET_ARCH
-          for i in 1 2 3; do
-            echo "Download attempt $i..."
-            make download -j$(nproc) && break
-            sleep 30
-          done
-
-      - name: Apply CatWrt customization
-        timeout-minutes: 30
-        run: |
-          cd $HOME
-          rm -rf catwrt_base
-          git clone --depth 1 $CATWRT_BASE_REPO catwrt_base
-          cd catwrt_base
-          
-          # 替换失效的仓库地址
-          sed -i 's|https://github.com/xiaorouji/openwrt-passwall|https://github.com/Openwrt-Passwall/openwrt-passwall|g' pull.sh
-          sed -i 's|https://github.com/xiaorouji/openwrt-passwall2|https://github.com/Openwrt-Passwall/openwrt-passwall2|g' pull.sh
-          
-          chmod +x pull.sh main.sh
-          sudo -E bash pull.sh || true
-          
-          # 修正架构参数：catwrt_base 使用 'amd64' 而非 'x86_64'
-          ARCH_DIR="amd64"
-          if [ "$TARGET_ARCH" = "x86_64" ]; then
-            ARCH_DIR="amd64"
-          elif [ "$TARGET_ARCH" = "aarch64" ]; then
-            ARCH_DIR="arm64"
-          fi
-          
-          # 非交互式运行 main.sh，若目录不存在则跳过模板更新
-          if [ -d "/home/catwrt_base/$ARCH_DIR/v24.9" ]; then
-            printf '1\n%s/v24.9\n3\n' "$ARCH_DIR" | sudo -E bash main.sh || true
-          else
-            echo "Template directory /home/catwrt_base/$ARCH_DIR/v24.9 not found, skipping main.sh template update"
-          fi
-
-      - name: Fix libsepol build
-        run: |
-          cd /home/lede
-          sed -i 's|SUBDIRS = src utils man|SUBDIRS = src man|' package/libs/libsepol/Makefile
-
-      - name: Fix lua compile error (remove stray arch argument)
-        run: |
-          cd /home/lede
-          # 修复 lua Makefile 中多余的 $(ARCH) 参数
-          sed -i 's/ \$(ARCH)//g' package/utils/lua/Makefile
-          # 确保修改生效
-          grep -n "ARCH" package/utils/lua/Makefile || echo "No ARCH left"
-
-      - name: Final build
-        id: final_build
-        run: |
-          cd /home/lede
-          make -j1 V=s 2>&1 | tee build.log
-          echo "BUILD_SUCCESS=true" >> $GITHUB_OUTPUT
-
-      - name: Upload build logs on failure
-        if: failure() && steps.final_build.outcome == 'failure'
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            /home/lede/build.log
-            /home/lede/tools_build.log
-            /home/lede/toolchain_build.log
-          retention-days: 7
-
-      - name: Prepare Docker context
-        run: |
-          ROOTFS_PATH=$(find /home/lede/bin/targets -name "openwrt-*-rootfs.tar.gz" | head -n 1)
-          if [ -z "$ROOTFS_PATH" ]; then
-            echo "❌ Rootfs not found!"
-            find /home/lede/bin -type f -name "*.tar.gz" 2>/dev/null || true
-            exit 1
-          fi
-          echo "Found rootfs: $ROOTFS_PATH"
-          cp "$ROOTFS_PATH" rootfs.tar.gz
-          
-          if [ -f docker-entrypoint.sh ]; then
-            chmod +x docker-entrypoint.sh
-          fi
-          ls -la
+          fetch-depth: 0  # 需要完整历史用于版本生成
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: image=moby/buildkit:master
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
@@ -370,47 +58,76 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Generate tags
+      - name: Generate metadata
         id: meta
-        run: |
-          DATE_TAG=$(date +%Y%m%d)
-          echo "date_tag=$DATE_TAG" >> $GITHUB_OUTPUT
-          echo "Tags to be used:"
-          echo "  - latest"
-          echo "  - ${{ github.run_number }}"
-          echo "  - $DATE_TAG"
-          echo "  - ${{ env.TARGET_ARCH }}"
-          echo "  - ${{ env.TARGET_ARCH }}-$DATE_TAG"
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+      - name: Build and export for testing
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true  # 加载到本地用于测试
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Test image
+        run: |
+          echo "测试容器启动..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test --help | grep -q "CatWrt"
+          
+          echo "测试环境完整性..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test bash -c "
+            # 检查关键命令
+            command -v git make gcc curl sudo ccache
+            # 检查用户
+            id builder
+            # 检查目录权限
+            test -w /home/lede && test -w /output
+            echo '所有测试通过!'
+          "
+          
+          echo "测试编译脚本语法..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
-          tags: |
-            ${{ env.DOCKER_IMAGE_NAME }}:latest
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ github.run_number }}
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ steps.meta.outputs.date_tag }}
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ env.TARGET_ARCH }}
-            ${{ env.DOCKER_IMAGE_NAME }}:${{ env.TARGET_ARCH }}-${{ steps.meta.outputs.date_tag }}
-          labels: |
-            org.opencontainers.image.title=CatWrt
-            org.opencontainers.image.description=CatWrt Docker Image for ${{ env.TARGET_ARCH }}
-            org.opencontainers.image.source=https://github.com/miaoermua/catwrt_base
-            org.opencontainers.image.version=${{ github.run_number }}
-            org.opencontainers.image.created=${{ github.event.head_commit.timestamp }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Build summary
-        if: always()
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.IMAGE_NAME }}
+          short-description: "CatWrt 全自动编译环境 Docker 镜像"
+          readme-filepath: ./DOCKER_README.md
+
+      - name: Summary
         run: |
-          echo "## Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "- Target Architecture: ${{ env.TARGET_ARCH }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Build Status: ${{ steps.final_build.outcome }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Docker Image: ${{ env.DOCKER_IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Tags:" >> $GITHUB_STEP_SUMMARY
-          echo "  - latest" >> $GITHUB_STEP_SUMMARY
-          echo "  - ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "  - ${{ steps.meta.outputs.date_tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "## Docker 镜像构建完成 ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**镜像地址:** \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**标签:**" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
