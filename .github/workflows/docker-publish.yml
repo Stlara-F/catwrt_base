@@ -45,18 +45,24 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
             xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev libtirpc-dev libaio-dev
 
+      - name: Prepare /home/lede directory (解决权限问题)
+        run: |
+          # GitHub Runner 默认没有 /home 下的创建权限，先创建目录并授权给当前用户
+          sudo mkdir -p /home/lede
+          sudo chown $USER:$USER /home/lede
+
       - name: Clone LEDE source to /home (必须放在/home，CatWrt脚本要求)
         run: |
           git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO /home/lede
           cd /home/lede
           # 修复feeds：只修改有问题的分支，routing/telephony不指定分支，避免找不到分支的错误
           cat > feeds.conf.default <<EOF
-          src-git packages https://github.com/coolsnowwolf/packages
-          src-git luci https://github.com/coolsnowwolf/luci;master
-          src-git routing https://github.com/coolsnowwolf/routing
-          src-git telephony https://github.com/coolsnowwolf/telephony
-          src-git helloworld https://github.com/fw876/helloworld;master
-          EOF
+src-git packages https://github.com/coolsnowwolf/packages
+src-git luci https://github.com/coolsnowwolf/luci;master
+src-git routing https://github.com/coolsnowwolf/routing
+src-git telephony https://github.com/coolsnowwolf/telephony
+src-git helloworld https://github.com/fw876/helloworld;master
+EOF
 
       - name: Update feeds
         run: |
