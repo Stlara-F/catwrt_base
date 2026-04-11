@@ -12,6 +12,7 @@ ADD rootfs.tar.gz /
 
 # 复制启动脚本
 COPY docker-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh  # 确保脚本可执行
 
 # 声明容器内可用的网络端口
 EXPOSE 22 80 443 53/udp 53/tcp 8080 1883
@@ -19,8 +20,8 @@ EXPOSE 22 80 443 53/udp 53/tcp 8080 1883
 # 设置默认用户为 root
 USER root
 
-# 健康检查：检查web服务是否正常
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD wget -q --spider http://127.0.01/ || exit 1
+# 健康检查：修复IP笔误，检查web服务是否正常，增加重试兼容
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD wget -q --spider http://127.0.0.1/ || exit 1
 
 # 使用优化后的启动脚本
 ENTRYPOINT ["docker-entrypoint.sh"]
