@@ -1,27 +1,75 @@
-# 优化基础镜像，使用兼容的scratch，添加元数据
-FROM scratch
+# CatWrt 编译环境 Docker 镜像 (优化版)
+# 基于 Ubuntu 22.04 LTS，包含完整的 OpenWrt/LEDE 编译依赖
+# 使用方式: 
+#   docker run --rm -v ./output:/output catwrt/builder --auto --arch=amd64 --ver=v24.9
 
-# 镜像元数据
-LABEL maintainer="CatWrt Team"
-LABEL org.opencontainers.image.title="CatWrt"
-LABEL org.opencontainers.image.description="CatWrt Docker Image for x86_64"
-LABEL org.opencontainers.image.source="https://github.com/miaoermua/catwrt_base"
+FROM ubuntu:22.04
 
-# 将编译生成的根文件系统导入镜像
-ADD rootfs.tar.gz /
+# 环境变量
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+ENV FORCE_UNSAFE_CONFIGURE=1
+ENV MAKE_JOBS=4
 
-# 复制启动脚本（权限已在宿主机设置，直接ADD保留）
-COPY docker-entrypoint.sh /usr/local/bin/
+# 安装基础工具和编译依赖（合并 RUN 减少层数）
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        # 基础工具
+        ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+        bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+        gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man \
+        intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+        libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev \
+        libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp \
+        ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
+        python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig \
+        texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
+        sudo time tzdata file gosu \
+        # 额外依赖（naive 编译需要）
+        generate-ninja \
+        # 调试工具
+        htop iotop strace && \
+    # 设置时区
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
+    # 配置 ccache
+    ccache --max-size=10G && \
+    # 清理
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 声明容器内可用的网络端口
-EXPOSE 22 80 443 53/udp 53/tcp 8080 1883
+# 创建普通用户（编译 LEDE 必须使用非 root）
+# 使用固定 UID/GID 避免权限问题
+RUN groupadd -g 1000 builder && \
+    useradd -u 1000 -g builder -m -s /bin/bash builder && \
+    echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder && \
+    chmod 0440 /etc/sudoers.d/builder && \
+    mkdir -p /home/lede /home/catwrt_base /output /var/log/catwrt-build && \
+    chown -R builder:builder /home /output /var/log/catwrt-build
 
-# 设置默认用户为 root
-USER root
+# 预下载 ImmortalWrt 环境脚本（加速首次运行）
+RUN curl -fsSL -o /usr/local/bin/init_build_environment.sh \
+    https://build-scripts.immortalwrt.org/init_build_environment.sh && \
+    chmod +x /usr/local/bin/init_build_environment.sh && \
+    # 执行环境初始化（幂等）
+    bash /usr/local/bin/init_build_environment.sh || true
 
-# 健康检查：修复IP笔误，检查web服务是否正常，增加重试兼容
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 CMD wget -q --spider http://127.0.0.1/ || exit 1
+# 复制编译脚本（确保是最终优化版）
+COPY --chown=builder:builder build_catwrt_ci.sh /usr/local/bin/catwrt-build
+RUN chmod +x /usr/local/bin/catwrt-build
 
-# 使用优化后的启动脚本
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
-CMD ["/sbin/init"]
+# 复制入口脚本
+COPY docker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# 健康检查（确保环境就绪）
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD test -f /usr/local/bin/catwrt-build && test -d /home/lede || exit 1
+
+# 工作目录
+WORKDIR /home
+
+# 使用 gosu 切换用户（比 sudo 更干净）
+ENTRYPOINT ["/entrypoint.sh"]
+
+# 默认显示帮助
+CMD ["--help"]
