@@ -289,26 +289,46 @@ jobs:
           git clone --depth 1 $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           
-          # 🔧 关键修复：替换失效的仓库地址
+          # 替换失效的仓库地址
           sed -i 's|https://github.com/xiaorouji/openwrt-passwall|https://github.com/Openwrt-Passwall/openwrt-passwall|g' pull.sh
           sed -i 's|https://github.com/xiaorouji/openwrt-passwall2|https://github.com/Openwrt-Passwall/openwrt-passwall2|g' pull.sh
           
           chmod +x pull.sh main.sh
           sudo -E bash pull.sh || true
           
-          # 非交互式运行 main.sh
-          printf '1\nx86_64/v24.9\n3\n' | sudo -E bash main.sh || true
+          # 修正架构参数：catwrt_base 使用 'amd64' 而非 'x86_64'
+          ARCH_DIR="amd64"
+          if [ "$TARGET_ARCH" = "x86_64" ]; then
+            ARCH_DIR="amd64"
+          elif [ "$TARGET_ARCH" = "aarch64" ]; then
+            ARCH_DIR="arm64"
+          fi
           
+          # 非交互式运行 main.sh，若目录不存在则跳过模板更新
+          if [ -d "/home/catwrt_base/$ARCH_DIR/v24.9" ]; then
+            printf '1\n%s/v24.9\n3\n' "$ARCH_DIR" | sudo -E bash main.sh || true
+          else
+            echo "Template directory /home/catwrt_base/$ARCH_DIR/v24.9 not found, skipping main.sh template update"
+          fi
+
       - name: Fix libsepol build
         run: |
           cd /home/lede
-          # 禁用 chkcon 工具编译
           sed -i 's|SUBDIRS = src utils man|SUBDIRS = src man|' package/libs/libsepol/Makefile
 
-      - name: Final build
+      - name: Fix lua compile error (remove stray arch argument)
         run: |
           cd /home/lede
-          make -j1 V=s 2>&1 | tee build.log  # 使用 -j1 单线程
+          # 修复 lua Makefile 中多余的 $(ARCH) 参数
+          sed -i 's/ \$(ARCH)//g' package/utils/lua/Makefile
+          # 确保修改生效
+          grep -n "ARCH" package/utils/lua/Makefile || echo "No ARCH left"
+
+      - name: Final build
+        id: final_build
+        run: |
+          cd /home/lede
+          make -j1 V=s 2>&1 | tee build.log
           echo "BUILD_SUCCESS=true" >> $GITHUB_OUTPUT
 
       - name: Upload build logs on failure
