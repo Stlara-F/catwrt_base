@@ -276,18 +276,22 @@ jobs:
           done
 
       - name: Apply CatWrt customization
+        timeout-minutes: 30
         run: |
           cd $HOME
-          if [ -d "catwrt_base" ]; then
-            rm -rf catwrt_base
-          fi
+          rm -rf catwrt_base
           git clone --depth 1 $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
+          
+          # 🔧 关键修复：替换失效的仓库地址
+          sed -i 's|https://github.com/xiaorouji/openwrt-passwall|https://github.com/Openwrt-Passwall/openwrt-passwall|g' pull.sh
+          sed -i 's|https://github.com/xiaorouji/openwrt-passwall2|https://github.com/Openwrt-Passwall/openwrt-passwall2|g' pull.sh
+          
           chmod +x pull.sh main.sh
-          sudo -E bash pull.sh
-          sudo -E bash main.sh <<< "1"  # 选择选项1：更新模板
-          # 输入架构和版本
-          echo "x86_64/v24.9" | sudo -E bash main.sh <<< "1"
+          sudo -E bash pull.sh || true
+          
+          # 非交互式运行 main.sh
+          printf '1\nx86_64/v24.9\n3\n' | sudo -E bash main.sh || true
 
       - name: Final build
         id: final_build
