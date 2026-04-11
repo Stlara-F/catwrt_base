@@ -57,12 +57,12 @@ jobs:
           cd /home/lede
           # 修复feeds：只修改有问题的分支，routing/telephony不指定分支，避免找不到分支的错误
           cat > feeds.conf.default <<EOF
-src-git packages https://github.com/coolsnowwolf/packages
-src-git luci https://github.com/coolsnowwolf/luci;master
-src-git routing https://github.com/coolsnowwolf/routing
-src-git telephony https://github.com/coolsnowwolf/telephony
-src-git helloworld https://github.com/fw876/helloworld;master
-EOF
+          src-git packages https://github.com/coolsnowwolf/packages
+          src-git luci https://github.com/coolsnowwolf/luci;master
+          src-git routing https://github.com/coolsnowwolf/routing
+          src-git telephony https://github.com/coolsnowwolf/telephony
+          src-git helloworld https://github.com/fw876/helloworld;master
+          EOF
 
       - name: Update feeds
         run: |
