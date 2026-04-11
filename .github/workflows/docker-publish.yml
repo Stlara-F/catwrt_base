@@ -255,6 +255,10 @@ jobs:
           CONFIG_PACKAGE_kmod-nft-fib=y
           CONFIG_PACKAGE_kmod-nft-nat=y
           CONFIG_PACKAGE_kmod-nft-offload=y
+          CONFIG_PACKAGE_libsepol=n
+          CONFIG_PACKAGE_libselinux=n
+          CONFIG_PACKAGE_selinux-policy=n
+          CONFIG_PACKAGE_refpolicy=n
           EOF
           
           # 应用配置
@@ -294,12 +298,17 @@ jobs:
           
           # 非交互式运行 main.sh
           printf '1\nx86_64/v24.9\n3\n' | sudo -E bash main.sh || true
-
-      - name: Final build
-        id: final_build
+          
+      - name: Fix libsepol build
         run: |
           cd /home/lede
-          make -j$(nproc) V=s 2>&1 | tee build.log
+          # 禁用 chkcon 工具编译
+          sed -i 's|SUBDIRS = src utils man|SUBDIRS = src man|' package/libs/libsepol/Makefile
+
+      - name: Final build
+        run: |
+          cd /home/lede
+          make -j1 V=s 2>&1 | tee build.log  # 使用 -j1 单线程
           echo "BUILD_SUCCESS=true" >> $GITHUB_OUTPUT
 
       - name: Upload build logs on failure
