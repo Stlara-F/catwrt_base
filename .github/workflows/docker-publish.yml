@@ -1,6 +1,6 @@
 # .github/workflows/build-push-docker.yml
 # 构建 CatWrt 编译环境镜像并推送到 Docker Hub
-# 优化: 添加测试步骤、语义化版本标签、多平台构建准备
+# 更新: 所有 Action 升级至 Node.js 24 兼容版本 (2026-04)
 
 name: Build and Push CatWrt Builder Image
 
@@ -25,42 +25,44 @@ on:
         default: ''
 
 env:
+  # 强制使用 Node.js 24（2026年6月后将成为默认）
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest  # 或保持 ubuntu-22.04
     permissions:
       contents: read
       packages: write
-      id-token: write  # 用于 cosign 签名（可选）
+      id-token: write
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5  # 升级: v4 → v5 (Node 24 支持)
         with:
-          fetch-depth: 0  # 需要完整历史用于版本生成
+          fetch-depth: 0
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4  # 升级: v3 → v4 (Node 24 支持)
         with:
           platforms: linux/amd64
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4  # 升级: v3 → v4 (Node 24 支持)
         with:
           driver-opts: image=moby/buildkit:master
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4  # 升级: v3 → v4 (Node 24 支持)
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}  # 确保在仓库 Settings → Secrets 中设置
 
       - name: Generate metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6  # 升级: v5 → v6 (Node 24 支持)
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
@@ -74,11 +76,11 @@ jobs:
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
       - name: Build and export for testing
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6  # 升级: v5 → v6 (Node 24 支持)
         with:
           context: .
           file: ./Dockerfile
-          load: true  # 加载到本地用于测试
+          load: true
           tags: ${{ env.IMAGE_NAME }}:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -90,11 +92,8 @@ jobs:
           
           echo "测试环境完整性..."
           docker run --rm ${{ env.IMAGE_NAME }}:test bash -c "
-            # 检查关键命令
             command -v git make gcc curl sudo ccache
-            # 检查用户
             id builder
-            # 检查目录权限
             test -w /home/lede && test -w /output
             echo '所有测试通过!'
           "
@@ -103,7 +102,7 @@ jobs:
           docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6  # 升级: v5 → v6 (Node 24 支持)
         with:
           context: .
           file: ./Dockerfile
@@ -115,7 +114,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5  # 升级: v4 → v5 (Node 24 支持)
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
