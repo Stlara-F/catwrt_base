@@ -24,11 +24,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            lede/build_dir
-            lede/staging_dir
-            lede/tmp
-            lede/dl
-          key: ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ hashFiles('lede/feeds.conf.default') }}
+            /home/lede/build_dir
+            /home/lede/staging_dir
+            /home/lede/tmp
+            /home/lede/dl
+          key: ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-${{ hashFiles('/home/lede/feeds.conf.default') }}
           restore-keys: |
             ${{ runner.os }}-lede-${{ env.LEDE_BRANCH }}-${{ env.TARGET_ARCH }}-
 
@@ -45,10 +45,10 @@ jobs:
             qemu-utils rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget \
             xmlto xxd zlib1g-dev libncurses-dev libzstd-dev liblzma-dev libtirpc-dev libaio-dev
 
-      - name: Clone LEDE source
+      - name: Clone LEDE source to /home (必须放在/home，CatWrt脚本要求)
         run: |
-          git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO lede
-          cd lede
+          git clone --depth 1 --branch $LEDE_BRANCH $LEDE_REPO /home/lede
+          cd /home/lede
           # 修复feeds：只修改有问题的分支，routing/telephony不指定分支，避免找不到分支的错误
           cat > feeds.conf.default <<EOF
           src-git packages https://github.com/coolsnowwolf/packages
@@ -60,21 +60,20 @@ jobs:
 
       - name: Update feeds
         run: |
-          cd lede
+          cd /home/lede
           ./scripts/feeds update -a
-          ./scripts/feeds install -a
-          # 彻底解决依赖缺失：手动安装所有缺失的依赖包
+          # 先安装缺失的依赖包，再安装所有feeds，强制覆盖核心包
           ./scripts/feeds install bc pciutils libpam libunistring csstidy luasrcdiet libaio libtirpc
           ./scripts/feeds install lm-sensors wsdd2 luci-app-ksmbd luci-app-samba ddns-scripts wget-ssl
           ./scripts/feeds install luci-compat bash jq ntpdate smartmontools coreutils libxml2
           ./scripts/feeds install liblzma libpcre2 libnetsnmp libcurl libtins libyaml-cpp glib2 libgpiod
-          ./scripts/feeds install -f libxcrypt
+          ./scripts/feeds install -a -f
 
       # ---------- 核心修复：先清理TARGET_ARCH，手动构建conf工具，彻底避免污染 ----------
       - name: Build conf tool first
         id: build_conf
         run: |
-          cd lede
+          cd /home/lede
           # 彻底清理污染的环境变量，避免影响conf编译
           unset TARGET_ARCH
           # 先手动构建conf工具，此时没有TARGET_ARCH污染，编译不会出错
@@ -90,7 +89,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: conf-build-log
-          path: lede/conf_build.log
+          path: /home/lede/conf_build.log
 
       - name: Fail job if conf build failed
         if: steps.build_conf.outputs.CONF_BUILT == 'failed'
@@ -101,7 +100,7 @@ jobs:
       # ---------- 现在conf已经构建完成，恢复TARGET_ARCH，执行defconfig，不会再触发conf编译了 ----------
       - name: Generate default config
         run: |
-          cd lede
+          cd /home/lede
           # 恢复TARGET_ARCH，此时conf已经存在，defconfig不会再构建conf，不会污染
           export TARGET_ARCH=$TARGET_ARCH
           make defconfig
@@ -109,21 +108,21 @@ jobs:
       # ---------- 现在再构建host工具，此时conf已经存在，不会触发交互式menuconfig ----------
       - name: Build host tools
         run: |
-          cd lede
+          cd /home/lede
           unset TARGET_ARCH
           make tools/install -j$(nproc) V=s
           make toolchain/install -j$(nproc) V=s
 
       - name: Download packages
         run: |
-          cd lede
+          cd /home/lede
           export TARGET_ARCH=$TARGET_ARCH
           # 重试3次下载，避免网络波动
           for i in 1 2 3; do make download -j$(nproc) && break; sleep 10; done
 
       - name: First minimal build (optional)
         run: |
-          cd lede
+          cd /home/lede
           make -j$(nproc) V=s || true
 
       - name: Apply CatWrt customization
@@ -132,17 +131,18 @@ jobs:
           git clone $CATWRT_BASE_REPO catwrt_base
           cd catwrt_base
           chmod +x pull.sh main.sh
+          # 现在lede已经在/home/lede了，符合CatWrt脚本的要求
           sudo -E bash pull.sh
           sudo -E bash main.sh
 
       - name: Final build
         run: |
-          cd lede
+          cd /home/lede
           make -j$(nproc) V=s
 
       - name: Prepare Docker context
         run: |
-          ROOTFS_PATH=$(find lede/bin/targets -name "openwrt-*-rootfs.tar.gz" | head -n 1)
+          ROOTFS_PATH=$(find /home/lede/bin/targets -name "openwrt-*-rootfs.tar.gz" | head -n 1)
           if [ -z "$ROOTFS_PATH" ]; then
             echo "Rootfs not found, check target path"
             exit 1
