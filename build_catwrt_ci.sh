@@ -438,8 +438,7 @@ EOF
 
 # ---------------------------- 步骤6：编译 ----------------------------
 do_build() {
-    # 🔧 第二重保险：函数内再次声明所有变量，加默认值
-    # 就算全局变量没传过来，这里也能兜底
+    # 函数内变量保护
     local SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
     local AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
@@ -458,13 +457,21 @@ do_build() {
         die "缺少 .config 文件，无法编译"
     fi
     
-    # 清理旧的构建（可选，用于干净构建）
+    # 检查磁盘剩余空间（至少需要 20GB）
+    local avail_gb=$(df -BG . | awk 'NR==2 {print $4}' | tr -d 'G')
+    if [[ $avail_gb -lt 20 ]]; then
+        log ERROR "磁盘空间严重不足 (剩余 ${avail_gb}GB)，至少需要 20GB"
+        df -h .
+        die "请清理磁盘空间后重试"
+    fi
+    
+    # 清理旧的构建（可选）
     if [[ "$CLEAN_BUILD" == "true" ]]; then
         log INFO "执行 make clean..."
         sudo -u "$NORMAL_USER" make clean
     fi
     
-    # 编译命令
+    # 编译命令：始终使用 V=s 输出详细日志
     local build_cmd="make V=s -j${MAKE_JOBS}"
     [[ "$SINGLE_THREAD_FIRST" == "true" ]] && build_cmd="make V=s -j1"
     
@@ -473,9 +480,10 @@ do_build() {
     local ret=$?
     set -e
     
-    # 🔧 第三重保险：条件判断里也加默认值，三重保险！
+    # 多线程失败时自动尝试单线程编译（并输出详细日志）
     if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "${AUTO_RETRY_SINGLE:-true}" == "true" ]]; then
-        log WARN "多线程编译失败，尝试单线程重试..."
+        log WARN "多线程编译失败 (退出码: $ret)，尝试单线程详细编译以定位问题..."
+        log INFO "执行: make V=s -j1"
         set +e
         sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make V=s -j1" 2>&1 | tee -a "$LOG_FILE"
         ret=$?
@@ -494,6 +502,7 @@ do_build() {
     log INFO "编译成功！生成 $firmware_count 个固件文件"
     find "$bin_dir" -type f -exec ls -lh {} \; | tee -a "$LOG_FILE"
 }
+
 
 # ---------------------------- 后处理 ----------------------------
 post_process() {
