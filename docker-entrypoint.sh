@@ -53,10 +53,9 @@ validate_environment() {
         command -v "$cmd" >/dev/null 2>&1 || log_error "缺少必要命令: $cmd"
     done
     
-    # 自动修复 git safe.directory 问题 (常见于 GitHub Actions 挂载卷)
-    if [[ -d /home/lede/.git ]]; then
-        sudo -u builder git config --global --add safe.directory /home/lede || true
-    fi
+    # 核心修改：全局放行Git安全目录，替换原有仅针对/home/lede的配置
+    log_info "全局配置Git安全目录，避免子模块遍历卡顿..."
+    sudo -u builder git config --global --add safe.directory '*'
     
     # 检查磁盘空间（至少 10GB 可用）
     local avail=$(df -BG /output | awk 'NR==2 {print $4}' | tr -d 'G')
