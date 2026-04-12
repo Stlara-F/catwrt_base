@@ -9,10 +9,9 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 ENV FORCE_UNSAFE_CONFIGURE=1
-ENV MAKE_JOBS=4
-# 🔧 新增：默认开启 Docker 模式，自动跳过宿主机检查，完美适配我们的新脚本！
+# 核心修改：将MAKE_JOBS从4改为2，适配GitHub Actions双核Runner
+ENV MAKE_JOBS=2
 ENV CATWRT_DOCKER_MODE=1
-# 🔧 配置 ccache 目录
 ENV CCACHE_DIR=/home/builder/.ccache
 
 # 安装基础工具和编译依赖（合并 RUN 减少层数）
