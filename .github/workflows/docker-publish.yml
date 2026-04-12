@@ -145,3 +145,4 @@ jobs:
           echo "**资源使用:**" >> $GITHUB_STEP_SUMMARY
           df -h . | awk 'NR==2 {print "- 工作空间: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
           free -h | awk 'NR==2 {print "- 内存: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
+
