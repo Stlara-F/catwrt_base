@@ -1,7 +1,4 @@
 # .github/workflows/build-push-docker.yml
-# 构建 CatWrt 编译环境镜像并推送到 Docker Hub
-# 优化版 (2026-04) - 解决磁盘/超时/缓存问题
-
 name: Build and Push CatWrt Builder Image
 
 on:
@@ -27,6 +24,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
+  # 限制 GitHub Actions 上的编译线程数，防止 OOM
+  MAKE_JOBS: 2
 
 jobs:
   build-and-push:
@@ -42,8 +41,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 🔧 优化点 1：强制释放磁盘空间（关键！）
-      # 清除 Android、.NET、Haskell 等无用工具，可腾出约 20-30GB
+      # ⭐ 新增：释放磁盘空间（移除不需要的大型工具链）
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -71,19 +69,6 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 🔧 优化点 2：设置 GitHub Actions 缓存（加速 ccache 与 go mod）
-      # 编译过程产生的 ccache 和 go 构建缓存可跨工作流复用
-      - name: Cache compiler artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            /tmp/.buildx-cache
-            /tmp/.ccache-catwrt
-            /tmp/.go-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
       - name: Generate metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -99,7 +84,6 @@ jobs:
             type=schedule,pattern={{date 'YYYYMMDD'}}
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
-      # 🔧 优化点 3：先构建测试镜像，并使用环境变量限制线程数
       - name: Build and export for testing
         uses: docker/build-push-action@v7
         with:
@@ -107,32 +91,27 @@ jobs:
           file: ./Dockerfile
           load: true
           tags: ${{ env.IMAGE_NAME }}:test
-          # 启用缓存挂载，让 Dockerfile 中的 ccache 目录能被缓存
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
+          build-args: |
+            MAKE_JOBS=${{ env.MAKE_JOBS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      # 🔧 优化点 4：测试阶段显式设置单线程/低线程，防止 Runner 内存爆炸
-      - name: Test image (Sanity & Syntax)
+      - name: Test image
         run: |
           echo "测试容器启动..."
           docker run --rm ${{ env.IMAGE_NAME }}:test --help | grep -q "CatWrt"
           
-          echo "测试环境完整性（限制线程为 2，避免 OOM）..."
-          docker run --rm \
-            -e MAKE_JOBS=2 \
-            -e SINGLE_THREAD_FIRST=false \
-            -e DEBUG=true \
-            ${{ env.IMAGE_NAME }}:test bash -c "
-              command -v git make gcc curl sudo ccache
-              id builder
-              test -w /home/lede && test -w /output
-              echo '所有测试通过!'
-            "
+          echo "测试环境完整性..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test bash -c "
+            command -v git make gcc curl sudo ccache
+            id builder
+            test -w /home/lede && test -w /output
+            echo '所有测试通过!'
+          "
           
           echo "测试编译脚本语法..."
           docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build
 
-      # 🔧 优化点 5：最终推送时同样使用缓存
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -142,8 +121,10 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache,mode=max
+          build-args: |
+            MAKE_JOBS=${{ env.MAKE_JOBS }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Update Docker Hub description
         uses: peter-evans/dockerhub-description@v5
