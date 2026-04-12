@@ -1,8 +1,3 @@
-# .github/workflows/docker-publish.yml
-# 构建 CatWrt 编译环境镜像并推送到 Docker Hub
-# 更新: 所有 Action 升级至 Node.js 24 兼容版本 (2026-04)
-# 增量优化: 增加磁盘清理、缓存持久化、并行度限制
-
 name: Build and Push CatWrt Builder Image
 
 on:
@@ -41,19 +36,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          # 🔧 浅克隆，只需要最新文件，节省90%的克隆时间和存储
           fetch-depth: 1
 
-      # ---------- 释放磁盘空间：这个太重要了！直接释放 60GB+ 空间 ----------
+      # ---------- 核心修改：补全所有清理项（新增docker-images: true） ----------
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
+          tool-cache: true      # 清理预装工具
+          android: true         # 移除Android SDK
+          dotnet: true          # 移除.NET
+          haskell: true         # 移除Haskell
+          large-packages: true  # 移除大型无用包
+          docker-images: true   # 新增：清理预装Docker镜像（释放10+GB）
+          swap-storage: true    # 开启Swap虚拟内存
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -146,7 +141,6 @@ jobs:
           echo "**标签:**" >> $GITHUB_STEP_SUMMARY
           echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
           
-          # 🔧 输出存储使用情况，确保在限制内
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**资源使用:**" >> $GITHUB_STEP_SUMMARY
           df -h . | awk 'NR==2 {print "- 工作空间: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
