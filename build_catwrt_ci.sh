@@ -1,11 +1,12 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.0 - CI/CD Ready)
+# CatWrt 完全自动化编译脚本 (v2.1 - CI/CD Ready)
 # 真正无人值守，零交互，失败自动重试
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
 set -euo pipefail  # 严格模式：未定义变量报错，管道失败检测
 
 # ---------------------------- 配置参数 ----------------------------
+# 所有变量都加了默认值，严格模式下再也不会报错！
 NORMAL_USER="${CATWRT_USER:-$(logname 2>/dev/null || echo "builder")}"
 TARGET_ARCH="${CATWRT_ARCH:-"amd64"}"
 TARGET_VER="${CATWRT_VER:-"v24.9"}"
@@ -15,6 +16,13 @@ CONFIG_TYPE="${CONFIG_TYPE:-}"                  # 空则自动选择
 AUTO_MODE="${AUTO_MODE:-false}"
 MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
 MAX_RETRIES="${MAX_RETRIES:-3}"                 # 网络操作最大重试次数
+
+# 新增：可选变量默认值，解决 unbound variable 问题
+CLEAN_BUILD="${CLEAN_BUILD:-false}"
+SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
+AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
+DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
+CATWRT_DOCKER_MODE="${CATWRT_DOCKER_MODE:-0}"
 
 # 路径
 LEDE_DIR="/home/lede"
@@ -42,9 +50,9 @@ log() {
 die() {
     log ERROR "$@"
     # 发送失败通知（如果配置了 webhook）
-    if [[ -n "${DISCORD_WEBHOOK:-}" ]]; then
+    if [[ -n "$DISCORD_WEBHOOK" ]]; then
         curl -fsSL -X POST -H "Content-Type: application/json" \
-            -d "{\"content\":\"CatWrt 编译失败: $*\"}" "$DISCORD_WEBHOOK" || true
+            -d "{\"content\":\"❌ CatWrt 编译失败: $*\"}" "$DISCORD_WEBHOOK" || true
     fi
     exit 1
 }
@@ -84,32 +92,30 @@ fix_lede_permissions() {
 
 # ---------------------------- 预检 ----------------------------
 check_env() {
-    # Docker 模式：跳过某些检查
-    if [[ "${CATWRT_DOCKER_MODE:-}" == "1" ]]; then
-        log INFO "运行在 Docker 模式中，跳过宿主机检查"
-        # Docker 中不需要检查磁盘空间（由宿主机管理），但保留基本检查
-        [[ -d "/home" ]] || die "/home 目录不存在"
-        mkdir -p "$LOG_DIR"
-        id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
-        # 跳过 apt 安装检查（镜像已包含）
-        return 0
-    fi
-    
-    # 原有检查逻辑...
-    [[ $EUID -eq 0 ]] || die "必须使用 root 运行"
-    # ... 其余不变
-
     [[ $EUID -eq 0 ]] || die "必须使用 root 运行"
     [[ -d "/home" ]] || die "/home 目录不存在"
     mkdir -p "$LOG_DIR"
     
-    # 磁盘空间（编译需要 50GB+）
-    local avail_gb=$(df -BG /home | awk 'NR==2 {print $4}' | tr -d 'G')
-    [[ $avail_gb -gt 50 ]] || die "磁盘空间不足 50GB (当前: ${avail_gb}GB)"
+    # Docker 模式：跳过某些检查
+    if [[ "$CATWRT_DOCKER_MODE" == "1" ]]; then
+        log INFO "运行在 Docker 模式中，跳过宿主机检查"
+        id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
+        # 跳过其他宿主机检查
+    else
+        # 磁盘空间（编译需要 50GB+）
+        local avail_gb=$(df -BG /home | awk 'NR==2 {print $4}' | tr -d 'G')
+        [[ $avail_gb -gt 50 ]] || die "磁盘空间不足 50GB (当前: ${avail_gb}GB)"
+        
+        # 内存检查（建议 4GB+）
+        local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
+        [[ $mem_gb -gt 3 ]] || log WARN "内存不足 4GB，编译可能缓慢或失败"
+    fi
     
-    # 内存检查（建议 4GB+）
-    local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
-    [[ $mem_gb -gt 3 ]] || log WARN "内存不足 4GB，编译可能缓慢或失败"
+    # 检测 GitHub Actions 环境，自动限制线程防OOM
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        log INFO "检测到 GitHub Actions 环境，自动限制编译线程为 4"
+        MAKE_JOBS=4
+    fi
     
     # 网络检查（带重试）
     retry "curl -fsSL --connect-timeout 10 https://github.com"
@@ -137,7 +143,9 @@ install_deps() {
     log STEP "步骤1: 安装编译依赖"
     
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
+    
+    # APT 更新加重试，解决源网络波动
+    retry "apt-get update -qq"
     
     # 检测是否已安装主要依赖，避免重复安装
     if ! dpkg -l | grep -q "build-essential"; then
@@ -243,33 +251,72 @@ select_config() {
 _generate_minimal_config() {
     local target_system=""
     local subtarget=""
+    local device="default"
     
     case "$TARGET_ARCH" in
-        amd64) target_system="x86"; subtarget="64" ;;
-        mt7621) target_system="MediaTek Ralink MIPS"; subtarget="MT7621" ;;
-        mt798x) target_system="MediaTek Ralink ARM"; subtarget="MT798X" ;;
-        meson32) target_system="Amlogic Meson"; subtarget="Meson8b" ;;
-        meson64) target_system="Amlogic Meson"; subtarget="Mesongxbb" ;;
-        rkarm64) target_system="Rockchip"; subtarget="RK33xx" ;;
-        *) die "无法为架构 $TARGET_ARCH 生成最小配置，请提供预置配置文件" ;;
+        amd64) 
+            target_system="x86"
+            subtarget="64"
+            device="generic"
+            ;;
+        mt7621) 
+            target_system="mediatek"
+            subtarget="mt7621"
+            device="default"
+            ;;
+        mt798x) 
+            target_system="mediatek"
+            subtarget="mt7986"
+            device="default"
+            ;;
+        meson32) 
+            target_system="amlogic"
+            subtarget="meson8b"
+            device="default"
+            ;;
+        meson64) 
+            target_system="amlogic"
+            subtarget="mesongxbb"
+            device="default"
+            ;;
+        rkarm64) 
+            target_system="rockchip"
+            subtarget="rk33xx"
+            device="default"
+            ;;
+        diy/*)
+            # DIY 主题默认使用 amd64 基础配置
+            log WARN "DIY 架构，默认使用 amd64 基础配置"
+            target_system="x86"
+            subtarget="64"
+            device="generic"
+            ;;
+        *) 
+            die "无法为架构 $TARGET_ARCH 生成最小配置，请提供预置配置文件" 
+            ;;
     esac
     
-    log INFO "生成最小配置: $target_system / $subtarget"
+    log INFO "生成最小配置: $target_system/$subtarget"
     
     sudo -u "$NORMAL_USER" bash <<EOF
 cd "$LEDE_DIR"
 cat > .config <<CONFIG
-CONFIG_TARGET_${target_system// /_}=y
-CONFIG_TARGET_${target_system// /_}_${subtarget}=y
-CONFIG_TARGET_${target_system// /_}_${subtarget}_DEVICE_generic=y
+# 自动生成的最小配置
+CONFIG_TARGET_${target_system}=y
+CONFIG_TARGET_${target_system}_${subtarget}=y
+CONFIG_TARGET_${target_system}_${subtarget}_DEVICE_${device}=y
+
+# 基础包
 CONFIG_PACKAGE_luci=y
 CONFIG_PACKAGE_luci-ssl=y
 CONFIG_PACKAGE_default-settings=y
 CONFIG_PACKAGE_default-settings-chn=y
+
+# 版本信息
 CONFIG_IMAGEOPT=y
 CONFIG_VERSIONOPT=y
 CONFIG_VERSION_DIST="CatWrt"
-CONFIG_VERSION_NUMBER="$TARGET_VER"
+CONFIG_VERSION_NUMBER="${TARGET_VER}"
 CONFIG_VERSION_CODE="$(date +%Y%m%d)"
 CONFIG
 make defconfig
@@ -378,14 +425,14 @@ do_build() {
     fi
     
     # 清理旧的构建（可选，用于干净构建）
-    if [[ "${CLEAN_BUILD:-false}" == "true" ]]; then
+    if [[ "$CLEAN_BUILD" == "true" ]]; then
         log INFO "执行 make clean..."
         sudo -u "$NORMAL_USER" make clean
     fi
     
-    # 编译（单线程首次，失败后自动重试多线程 - 用于调试）
+    # 编译命令
     local build_cmd="make V=s -j${MAKE_JOBS}"
-    [[ "${SINGLE_THREAD_FIRST:-false}" == "true" ]] && build_cmd="make V=s -j1"
+    [[ "$SINGLE_THREAD_FIRST" == "true" ]] && build_cmd="make V=s -j1"
     
     set +e
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && $build_cmd" 2>&1 | tee -a "$LOG_FILE"
@@ -393,7 +440,8 @@ do_build() {
     set -e
     
     # 如果多线程失败且不是单线程模式，尝试单线程重试
-    if [[ $ret -ne 0 && "$SINGLE_THREAD_FIRST" != "true" && "${AUTO_RETRY_SINGLE:-true}" == "true" ]]; then
+    # 双重保险：所有变量都加了默认值
+    if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "$AUTO_RETRY_SINGLE" == "true" ]]; then
         log WARN "多线程编译失败，尝试单线程重试..."
         set +e
         sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make V=s -j1" 2>&1 | tee -a "$LOG_FILE"
@@ -434,7 +482,7 @@ post_process() {
     log INFO "输出目录: $output_dir"
     
     # 发送成功通知
-    if [[ -n "${DISCORD_WEBHOOK:-}" ]]; then
+    if [[ -n "$DISCORD_WEBHOOK" ]]; then
         local firmware_info=$(find "$output_dir" -name "*.bin" -o -name "*.img" | head -3 | xargs -I{} basename {} | tr '\n' ', ')
         curl -fsSL -X POST -H "Content-Type: application/json" \
             -d "{\"content\":\"✅ CatWrt 编译成功！\n架构: ${TARGET_ARCH}\n版本: ${TARGET_VER}\n固件: ${firmware_info}\"}" \
@@ -461,7 +509,7 @@ main() {
             --config=*) CONFIG_TYPE="${1#*=}"; USE_PRESET_CONFIG=true ;;
             --auto|-y) AUTO_MODE=true; SKIP_FIRST_BUILD=true ;;
             --jobs=*) MAKE_JOBS="${1#*=}" ;;
-            --clean-build) export CLEAN_BUILD=true ;;
+            --clean-build) CLEAN_BUILD=true ;;
             --help) 
                 echo "用法: sudo $0 --auto --user=NAME --arch=ARCH [--ver=VER] [选项]"
                 echo "选项: --config=TYPE  --jobs=N  --clean-build"
@@ -473,8 +521,8 @@ main() {
     
     # 自动模式强制设置
     if [[ "$AUTO_MODE" == true ]]; then
-        export SKIP_FIRST_BUILD=true
-        export USE_PRESET_CONFIG=true
+        SKIP_FIRST_BUILD=true
+        USE_PRESET_CONFIG=true
     fi
     
     check_env
