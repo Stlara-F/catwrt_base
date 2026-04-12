@@ -507,63 +507,51 @@ EOF
     retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS}'"
 }
 
-# ---------------------------- 步骤6：编译 ----------------------------
+# ---------------------------- 步骤6：编译（核心优化） ----------------------------
 do_build() {
-    # 第二重保险：函数内再次声明所有变量，加默认值
-    local SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
-    local AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
-    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
-    local NORMAL_USER="${NORMAL_USER:-builder}"
-    local MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
-    local LOG_FILE="${LOG_FILE:-/var/log/catwrt-build/build.log}"
-    
-    log INFO "步骤6: 开始编译"
-    log INFO "使用 $MAKE_JOBS 个并行任务，日志: $LOG_FILE"
-    
+    local MAKE_JOBS="${MAKE_JOBS:-2}"
+    log INFO "步骤6: 开始编译（线程：$MAKE_JOBS）"
+
     cd "$LEDE_DIR"
-    
-    # 预编译检查
-    if [[ ! -f ".config" ]]; then
-        die "缺少 .config 文件，无法编译"
-    fi
-    
-    # 清理旧的构建（可选，用于干净构建）
-    if [[ "$CLEAN_BUILD" == "true" ]]; then
-        log INFO "执行 make clean..."
-        sudo -u "$NORMAL_USER" make clean
-    fi
-    
-    # 编译命令
-    local build_cmd="make V=s -j${MAKE_JOBS}"
-    [[ "$SINGLE_THREAD_FIRST" == "true" ]] && build_cmd="make V=s -j1"
-    
+    [[ ! -f ".config" ]] && die "缺少 .config"
+    [[ "$CLEAN_BUILD" == "true" ]] && sudo -u "$NORMAL_USER" make clean
+
+    # ================== 优化：多线程关闭V=s，失败后单线程开启 ==================
+    log INFO "开始多线程编译：make -j${MAKE_JOBS}"
     set +e
-    sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && $build_cmd" 2>&1 | tee -a "$LOG_FILE"
+    # 多线程阶段不输出详细日志（减少体积）
+    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} 2>&1 | tee -a "$LOG_FILE"
     local ret=$?
     set -e
-    
-    # 第三重保险：条件判断里也加默认值，三重保险！
-    if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "${AUTO_RETRY_SINGLE:-true}" == "true" ]]; then
-        log WARN "多线程编译失败，尝试单线程重试..."
+
+    if [[ $ret -ne 0 ]]; then
+        log WARN "========================================================"
+        log WARN "多线程编译失败！自动降级为单线程并输出详细日志"
+        log WARN "========================================================"
+
         set +e
-        sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make V=s -j1" 2>&1 | tee -a "$LOG_FILE"
+        # 单线程阶段开启V=s详细日志
+        sudo -u "$NORMAL_USER" make -j1 V=s 2>&1 | tee -a "$LOG_FILE"
         ret=$?
         set -e
+
+        if [[ $ret -ne 0 ]]; then
+            log ERROR "单线程编译失败！输出系统状态："
+            df -h | tee -a "$LOG_FILE"
+            free -m | tee -a "$LOG_FILE"
+            die "编译失败，请检查日志中 ERROR 所在行"
+        fi
     fi
-    
-    [[ $ret -eq 0 ]] || die "编译失败 (退出码: $ret)"
-    
-    # 验证输出
+
+    [[ $ret -eq 0 ]] || die "编译失败"
     local bin_dir="$LEDE_DIR/bin/targets"
-    [[ -d "$bin_dir" ]] || die "编译成功但未找到输出目录"
-    
-    local firmware_count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) | wc -l)
-    [[ $firmware_count -gt 0 ]] || die "编译完成但未生成固件文件"
-    
-    log INFO "编译成功！生成 $firmware_count 个固件文件"
-    find "$bin_dir" -type f -exec ls -lh {} \; | tee -a "$LOG_FILE"
+    [[ -d "$bin_dir" ]] || die "未找到固件输出目录"
+    local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) | wc -l)
+    [[ $count -gt 0 ]] || die "未生成固件"
+    log INFO "编译成功！固件数量：$count"
 }
+
 
 # ---------------------------- 后处理 ----------------------------
 post_process() {
