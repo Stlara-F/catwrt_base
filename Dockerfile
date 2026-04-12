@@ -10,6 +10,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 ENV FORCE_UNSAFE_CONFIGURE=1
 ENV MAKE_JOBS=4
+# 🔧 新增：默认开启 Docker 模式，自动跳过宿主机检查，完美适配我们的新脚本！
+ENV CATWRT_DOCKER_MODE=1
+# 🔧 配置 ccache 目录
+ENV CCACHE_DIR=/home/builder/.ccache
 
 # 安装基础工具和编译依赖（合并 RUN 减少层数）
 RUN apt-get update && \
@@ -32,13 +36,13 @@ RUN apt-get update && \
     # 设置时区
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     # 配置 ccache
-    ccache --max-size=10G && \
+    ccache --max-size=5G && \
     # 清理
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # 创建普通用户（编译 LEDE 必须使用非 root）
-# 使用固定 UID/GID 避免权限问题
+# 使用固定 UID/GID 1000，完美匹配 GitHub Actions runner 的默认用户，彻底解决权限问题！
 RUN groupadd -g 1000 builder && \
     useradd -u 1000 -g builder -m -s /bin/bash builder && \
     echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder && \
@@ -46,15 +50,15 @@ RUN groupadd -g 1000 builder && \
     mkdir -p /home/lede /home/catwrt_base /output /var/log/catwrt-build && \
     chown -R builder:builder /home /output /var/log/catwrt-build
 
+# 声明 volume 以便在 GitHub Actions 中挂载缓存
+VOLUME ["/home/builder/.ccache", "/home/lede/dl"]
+
 # 预下载 ImmortalWrt 环境脚本（加速首次运行）
 RUN curl -fsSL -o /usr/local/bin/init_build_environment.sh \
     https://build-scripts.immortalwrt.org/init_build_environment.sh && \
     chmod +x /usr/local/bin/init_build_environment.sh && \
     # 执行环境初始化（幂等）
     bash /usr/local/bin/init_build_environment.sh || true
-
-# 声明 volume 以便在 GitHub Actions 中挂载缓存
-VOLUME ["/home/builder/.ccache", "/home/lede/dl"]
 
 # 复制编译脚本（确保是最终优化版，放在最后以利用缓存）
 COPY --chown=builder:builder build_catwrt_ci.sh /usr/local/bin/catwrt-build
