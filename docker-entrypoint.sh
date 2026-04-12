@@ -69,6 +69,7 @@ validate_environment() {
 # 主流程
 main() {
     log_info "CatWrt Docker Builder 启动"
+    log_info "并行编译线程数: ${MAKE_JOBS:-auto}"
     log_debug "参数: $*"
     log_debug "用户: $(id)"
     
