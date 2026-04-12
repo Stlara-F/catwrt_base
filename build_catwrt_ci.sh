@@ -1,5 +1,5 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.2 - CI/CD Ready)
+# CatWrt 完全自动化编译脚本 (v2.3 - CI/CD Ready with GitHub Actions optimizations)
 # 真正无人值守，零交互，失败自动重试
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
@@ -112,8 +112,10 @@ check_env() {
     
     # 检测 GitHub Actions 环境，自动限制线程防OOM
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        log INFO "检测到 GitHub Actions 环境，自动限制编译线程为 4"
-        MAKE_JOBS=4
+        log INFO "检测到 GitHub Actions 环境，限制编译线程为 2 (防止内存溢出)"
+        MAKE_JOBS=2
+        # 同时限制下载线程
+        export DOWNLOAD_JOBS=2
     fi
     
     # 网络检查（带重试）
@@ -431,14 +433,16 @@ EOF
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig"
     
-    # 下载依赖（带重试）
+    # 下载依赖（带重试，且限制并行下载数）
     log INFO "下载编译依赖包..."
-    retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS}'"
+    local dl_jobs="${DOWNLOAD_JOBS:-${MAKE_JOBS}}"
+    retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${dl_jobs}'"
 }
 
 # ---------------------------- 步骤6：编译 ----------------------------
 do_build() {
-    # 函数内变量保护
+    # 🔧 第二重保险：函数内再次声明所有变量，加默认值
+    # 就算全局变量没传过来，这里也能兜底
     local SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
     local AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
@@ -456,22 +460,23 @@ do_build() {
     if [[ ! -f ".config" ]]; then
         die "缺少 .config 文件，无法编译"
     fi
-    
-    # 检查磁盘剩余空间（至少需要 20GB）
-    local avail_gb=$(df -BG . | awk 'NR==2 {print $4}' | tr -d 'G')
-    if [[ $avail_gb -lt 20 ]]; then
-        log ERROR "磁盘空间严重不足 (剩余 ${avail_gb}GB)，至少需要 20GB"
-        df -h .
-        die "请清理磁盘空间后重试"
+
+    # 预编译检查 OOM 风险 (GitHub Actions 环境)
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+        local mem_available=$(free -m | awk '/^Mem:/{print $7}')
+        if [[ $mem_available -lt 1024 ]]; then
+            log WARN "可用内存仅 ${mem_available}MB，编译可能因 OOM 失败，已强制单线程"
+            MAKE_JOBS=1
+        fi
     fi
     
-    # 清理旧的构建（可选）
+    # 清理旧的构建（可选，用于干净构建）
     if [[ "$CLEAN_BUILD" == "true" ]]; then
         log INFO "执行 make clean..."
         sudo -u "$NORMAL_USER" make clean
     fi
     
-    # 编译命令：始终使用 V=s 输出详细日志
+    # 编译命令
     local build_cmd="make V=s -j${MAKE_JOBS}"
     [[ "$SINGLE_THREAD_FIRST" == "true" ]] && build_cmd="make V=s -j1"
     
@@ -480,10 +485,9 @@ do_build() {
     local ret=$?
     set -e
     
-    # 多线程失败时自动尝试单线程编译（并输出详细日志）
+    # 🔧 第三重保险：条件判断里也加默认值，三重保险！
     if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "${AUTO_RETRY_SINGLE:-true}" == "true" ]]; then
-        log WARN "多线程编译失败 (退出码: $ret)，尝试单线程详细编译以定位问题..."
-        log INFO "执行: make V=s -j1"
+        log WARN "多线程编译失败，尝试单线程重试..."
         set +e
         sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make V=s -j1" 2>&1 | tee -a "$LOG_FILE"
         ret=$?
@@ -502,7 +506,6 @@ do_build() {
     log INFO "编译成功！生成 $firmware_count 个固件文件"
     find "$bin_dir" -type f -exec ls -lh {} \; | tee -a "$LOG_FILE"
 }
-
 
 # ---------------------------- 后处理 ----------------------------
 post_process() {
