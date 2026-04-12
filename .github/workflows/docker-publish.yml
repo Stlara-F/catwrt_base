@@ -1,4 +1,8 @@
-# .github/workflows/build-push-docker.yml
+# .github/workflows/docker-publish.yml
+# 构建 CatWrt 编译环境镜像并推送到 Docker Hub
+# 更新: 所有 Action 升级至 Node.js 24 兼容版本 (2026-04)
+# 增量优化: 增加磁盘清理、缓存持久化、并行度限制
+
 name: Build and Push CatWrt Builder Image
 
 on:
@@ -24,7 +28,7 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
-  # 限制 GitHub Actions 上的编译线程数，防止 OOM
+  # 限制编译并行度，防止 GitHub Actions 2 核机器 OOM
   MAKE_JOBS: 2
 
 jobs:
@@ -41,7 +45,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ⭐ 新增：释放磁盘空间（移除不需要的大型工具链）
+      # ---------- 新增：释放磁盘空间 ----------
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -50,8 +54,19 @@ jobs:
           dotnet: true
           haskell: true
           large-packages: true
-          docker-images: false
           swap-storage: true
+
+      # ---------- 新增：缓存 ccache 和下载的源码包 ----------
+      - name: Cache ccache and dl
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/ccache
+            /home/runner/work/_temp/dl
+          key: ${{ runner.os }}-catwrt-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-catwrt-${{ github.ref }}-
+            ${{ runner.os }}-catwrt-
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -91,10 +106,12 @@ jobs:
           file: ./Dockerfile
           load: true
           tags: ${{ env.IMAGE_NAME }}:test
-          build-args: |
-            MAKE_JOBS=${{ env.MAKE_JOBS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+          secrets: |
+            "github_token=${{ secrets.GITHUB_TOKEN }}"
 
       - name: Test image
         run: |
@@ -121,8 +138,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: linux/amd64
-          build-args: |
-            MAKE_JOBS=${{ env.MAKE_JOBS }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
