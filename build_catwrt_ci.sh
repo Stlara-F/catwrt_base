@@ -1,5 +1,5 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.3 - CI/CD Ready with GitHub Actions optimizations)
+# CatWrt 完全自动化编译脚本 (v2.3.1 - CI/CD Ready with GitHub Actions optimizations)
 # 真正无人值守，零交互，失败自动重试
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
@@ -200,6 +200,11 @@ setup_repos() {
         sudo -u "$NORMAL_USER" git reset --hard origin/master  # 干净更新
         sudo -u "$NORMAL_USER" git pull
     else
+        # 如果目录存在但不是 git 仓库，则先删除（修复残留目录问题）
+        if [[ -d "$LEDE_DIR" ]]; then
+            log WARN "/home/lede 目录存在但非 Git 仓库，将其移除..."
+            rm -rf "$LEDE_DIR"
+        fi
         log INFO "克隆 LEDE 源码..."
         retry "sudo -u $NORMAL_USER git clone https://github.com/coolsnowwolf/lede.git $LEDE_DIR"
         fix_lede_permissions
