@@ -1,23 +1,23 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.1 - CI/CD Ready)
+# CatWrt 完全自动化编译脚本 (v2.2 - CI/CD Ready)
 # 真正无人值守，零交互，失败自动重试
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
 set -euo pipefail  # 严格模式：未定义变量报错，管道失败检测
 
-# ---------------------------- 配置参数 ----------------------------
-# 所有变量都加了默认值，严格模式下再也不会报错！
+# ---------------------------- 全局配置参数 ----------------------------
+# 第一重保险：所有全局变量都加默认值
 NORMAL_USER="${CATWRT_USER:-$(logname 2>/dev/null || echo "builder")}"
 TARGET_ARCH="${CATWRT_ARCH:-"amd64"}"
 TARGET_VER="${CATWRT_VER:-"v24.9"}"
-SKIP_FIRST_BUILD="${SKIP_FIRST_BUILD:-true}"    # 默认跳过首次编译（CI环境）
-USE_PRESET_CONFIG="${USE_PRESET_CONFIG:-true}"  # 默认使用预置配置
-CONFIG_TYPE="${CONFIG_TYPE:-}"                  # 空则自动选择
+SKIP_FIRST_BUILD="${SKIP_FIRST_BUILD:-true}"
+USE_PRESET_CONFIG="${USE_PRESET_CONFIG:-true}"
+CONFIG_TYPE="${CONFIG_TYPE:-}"
 AUTO_MODE="${AUTO_MODE:-false}"
 MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
-MAX_RETRIES="${MAX_RETRIES:-3}"                 # 网络操作最大重试次数
+MAX_RETRIES="${MAX_RETRIES:-3}"
 
-# 新增：可选变量默认值，解决 unbound variable 问题
+# 所有可选变量的默认值，从根源解决 unbound variable
 CLEAN_BUILD="${CLEAN_BUILD:-false}"
 SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
 AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
@@ -42,7 +42,6 @@ log() {
         INFO) color="$GREEN" ;;
         WARN) color="$YELLOW" ;;
         ERROR) color="$RED" ;;
-        STEP) color="$BLUE" ;;
     esac
     echo -e "${color}[$level]${NC} $(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"
 }
@@ -140,7 +139,7 @@ check_env() {
 
 # ---------------------------- 步骤1：依赖安装 ----------------------------
 install_deps() {
-    log STEP "步骤1: 安装编译依赖"
+    log INFO "步骤1: 安装编译依赖"
     
     export DEBIAN_FRONTEND=noninteractive
     
@@ -178,7 +177,7 @@ install_deps() {
 
 # ---------------------------- 步骤2：仓库准备 ----------------------------
 setup_repos() {
-    log STEP "步骤2: 准备代码仓库"
+    log INFO "步骤2: 准备代码仓库"
     
     # CatWrt Base
     if [[ -d "$CATWRT_BASE_DIR/.git" ]]; then
@@ -207,7 +206,13 @@ setup_repos() {
 
 # ---------------------------- 步骤3：智能配置选择 ----------------------------
 select_config() {
-    log STEP "步骤3: 选择编译配置"
+    # 函数内变量保护
+    local TARGET_ARCH="${TARGET_ARCH:-amd64}"
+    local CATWRT_BASE_DIR="${CATWRT_BASE_DIR:-/home/catwrt_base}"
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local NORMAL_USER="${NORMAL_USER:-builder}"
+    
+    log INFO "步骤3: 选择编译配置"
     
     # 如果用户指定了配置类型
     if [[ -n "$CONFIG_TYPE" ]]; then
@@ -249,6 +254,12 @@ select_config() {
 
 # 生成最小配置（保底方案，确保能编译出固件）
 _generate_minimal_config() {
+    # 函数内变量保护
+    local TARGET_ARCH="${TARGET_ARCH:-amd64}"
+    local TARGET_VER="${TARGET_VER:-v24.9}"
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local NORMAL_USER="${NORMAL_USER:-builder}"
+    
     local target_system=""
     local subtarget=""
     local device="default"
@@ -325,7 +336,15 @@ EOF
 
 # ---------------------------- 步骤4：应用 CatWrt 定制 ----------------------------
 apply_custom() {
-    log STEP "步骤4: 应用 CatWrt 定制"
+    # 函数内变量保护
+    local TARGET_ARCH="${TARGET_ARCH:-amd64}"
+    local TARGET_VER="${TARGET_VER:-v24.9}"
+    local CATWRT_BASE_DIR="${CATWRT_BASE_DIR:-/home/catwrt_base}"
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local NORMAL_USER="${NORMAL_USER:-builder}"
+    local MAX_RETRIES="${MAX_RETRIES:-3}"
+    
+    log INFO "步骤4: 应用 CatWrt 定制"
     
     # 执行 pull.sh 更新插件（带重试）
     cd "$CATWRT_BASE_DIR"
@@ -391,7 +410,12 @@ apply_custom() {
 
 # ---------------------------- 步骤5：Feeds 更新 ----------------------------
 update_feeds() {
-    log STEP "步骤5: 更新 Feeds"
+    # 函数内变量保护
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local NORMAL_USER="${NORMAL_USER:-builder}"
+    local MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
+    
+    log INFO "步骤5: 更新 Feeds"
     
     cd "$LEDE_DIR"
     
@@ -414,7 +438,17 @@ EOF
 
 # ---------------------------- 步骤6：编译 ----------------------------
 do_build() {
-    log STEP "步骤6: 开始编译"
+    # 🔧 第二重保险：函数内再次声明所有变量，加默认值
+    # 就算全局变量没传过来，这里也能兜底
+    local SINGLE_THREAD_FIRST="${SINGLE_THREAD_FIRST:-false}"
+    local AUTO_RETRY_SINGLE="${AUTO_RETRY_SINGLE:-true}"
+    local CLEAN_BUILD="${CLEAN_BUILD:-false}"
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local NORMAL_USER="${NORMAL_USER:-builder}"
+    local MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
+    local LOG_FILE="${LOG_FILE:-/var/log/catwrt-build/build.log}"
+    
+    log INFO "步骤6: 开始编译"
     log INFO "使用 $MAKE_JOBS 个并行任务，日志: $LOG_FILE"
     
     cd "$LEDE_DIR"
@@ -439,9 +473,8 @@ do_build() {
     local ret=$?
     set -e
     
-    # 如果多线程失败且不是单线程模式，尝试单线程重试
-    # 双重保险：所有变量都加了默认值
-    if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "$AUTO_RETRY_SINGLE" == "true" ]]; then
+    # 🔧 第三重保险：条件判断里也加默认值，三重保险！
+    if [[ $ret -ne 0 && "${SINGLE_THREAD_FIRST:-false}" != "true" && "${AUTO_RETRY_SINGLE:-true}" == "true" ]]; then
         log WARN "多线程编译失败，尝试单线程重试..."
         set +e
         sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make V=s -j1" 2>&1 | tee -a "$LOG_FILE"
@@ -464,7 +497,14 @@ do_build() {
 
 # ---------------------------- 后处理 ----------------------------
 post_process() {
-    log STEP "后处理"
+    # 函数内变量保护
+    local TARGET_ARCH="${TARGET_ARCH:-amd64}"
+    local TARGET_VER="${TARGET_VER:-v24.9}"
+    local LEDE_DIR="${LEDE_DIR:-/home/lede}"
+    local LOG_FILE="${LOG_FILE:-/var/log/catwrt-build/build.log}"
+    local DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
+    
+    log INFO "后处理"
     
     # 收集编译产物
     local output_dir="/output/catwrt-${TARGET_ARCH}-${TARGET_VER}-$(date +%Y%m%d)"
@@ -524,6 +564,14 @@ main() {
         SKIP_FIRST_BUILD=true
         USE_PRESET_CONFIG=true
     fi
+    
+    # 🔧 第三重保险：全局导出所有变量，确保 sudo 子进程能继承
+    # 解决 sudo 环境变量重置导致的变量丢失问题
+    export NORMAL_USER TARGET_ARCH TARGET_VER
+    export CLEAN_BUILD SINGLE_THREAD_FIRST AUTO_RETRY_SINGLE
+    export DISCORD_WEBHOOK CATWRT_DOCKER_MODE
+    export MAKE_JOBS MAX_RETRIES
+    export CONFIG_TYPE AUTO_MODE USE_PRESET_CONFIG SKIP_FIRST_BUILD
     
     check_env
     install_deps
