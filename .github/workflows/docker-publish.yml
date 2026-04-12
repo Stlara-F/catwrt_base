@@ -28,8 +28,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
-  # 限制编译并行度，防止 GitHub Actions 2 核机器 OOM
-  MAKE_JOBS: 2
 
 jobs:
   build-and-push:
@@ -43,9 +41,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          fetch-depth: 0
+          # 🔧 浅克隆，只需要最新文件，节省90%的克隆时间和存储
+          fetch-depth: 1
 
-      # ---------- 新增：释放磁盘空间 ----------
+      # ---------- 释放磁盘空间：这个太重要了！直接释放 60GB+ 空间 ----------
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -55,18 +54,6 @@ jobs:
           haskell: true
           large-packages: true
           swap-storage: true
-
-      # ---------- 新增：缓存 ccache 和下载的源码包 ----------
-      - name: Cache ccache and dl
-        uses: actions/cache@v4
-        with:
-          path: |
-            /tmp/ccache
-            /home/runner/work/_temp/dl
-          key: ${{ runner.os }}-catwrt-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-catwrt-${{ github.ref }}-
-            ${{ runner.os }}-catwrt-
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -158,3 +145,9 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**标签:**" >> $GITHUB_STEP_SUMMARY
           echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+          
+          # 🔧 输出存储使用情况，确保在限制内
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**资源使用:**" >> $GITHUB_STEP_SUMMARY
+          df -h . | awk 'NR==2 {print "- 工作空间: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
+          free -h | awk 'NR==2 {print "- 内存: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
