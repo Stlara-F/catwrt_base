@@ -53,6 +53,11 @@ validate_environment() {
         command -v "$cmd" >/dev/null 2>&1 || log_error "缺少必要命令: $cmd"
     done
     
+    # 自动修复 git safe.directory 问题 (常见于 GitHub Actions 挂载卷)
+    if [[ -d /home/lede/.git ]]; then
+        sudo -u builder git config --global --add safe.directory /home/lede || true
+    fi
+    
     # 检查磁盘空间（至少 10GB 可用）
     local avail=$(df -BG /output | awk 'NR==2 {print $4}' | tr -d 'G')
     if [[ "$avail" -lt 10 ]]; then
@@ -69,7 +74,6 @@ validate_environment() {
 # 主流程
 main() {
     log_info "CatWrt Docker Builder 启动"
-    log_info "并行编译线程数: ${MAKE_JOBS:-auto}"
     log_debug "参数: $*"
     log_debug "用户: $(id)"
     
