@@ -139,6 +139,10 @@ check_env() {
     echo $$ > "$LOCK_FILE"
     
     log INFO "环境检查通过 | 用户: $NORMAL_USER | 架构: $TARGET_ARCH | 自动模式: $AUTO_MODE"
+        # 全局解决 Git unsafe repository 阻断问题
+    log INFO "配置 Git 全局安全目录防止权限阻断..."
+    git config --global --add safe.directory '*'
+    sudo -u "$NORMAL_USER" git config --global --add safe.directory '*'
 }
 
 # ---------------------------- 步骤1：依赖安装 ----------------------------
@@ -519,7 +523,8 @@ do_build() {
 
     log INFO "开始多线程编译：make -j${MAKE_JOBS}"
     set +e
-    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} 2>&1 | tee -a "$LOG_FILE"
+    # 加入 -k 参数，跳过失败包继续编译
+    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
     local ret=$?
     set -e
 
@@ -528,16 +533,15 @@ do_build() {
         log WARN "多线程编译失败！尝试自动跳过失败包继续编译"
         log WARN "========================================================"
         
-        # 🔧 新增：自动跳过失败包，继续编译其他包
         set +e
-        sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
+        sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
         ret=$?
         set -e
 
         if [[ $ret -ne 0 ]]; then
             log WARN "跳过失败包后仍失败，降级为单线程详细编译"
             set +e
-            sudo -u "$NORMAL_USER" make -j1 V=s IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
+            sudo -u "$NORMAL_USER" make -j1 V=s -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
             ret=$?
             set -e
         fi
@@ -568,7 +572,6 @@ do_build() {
     [[ $count -gt 0 ]] || die "未生成固件"
     log INFO "编译成功！固件数量：$count"
 }
-
 
 # ---------------------------- 后处理 ----------------------------
 post_process() {
