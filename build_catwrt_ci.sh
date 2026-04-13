@@ -475,28 +475,35 @@ update_feeds() {
     local NORMAL_USER="${NORMAL_USER:-builder}"
     local MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
     
-    log INFO "步骤5: 更新 Feeds"
+    log INFO "步骤5: 更新 Feeds 并自动修复编译问题"
     cd "$LEDE_DIR"
     export FEEDS_DEPTH=1
     
-    # 🔥 修复：移除所有可能失败的操作，简化流程
     sudo -u "$NORMAL_USER" rm -rf tmp/.packageinfo 2>/dev/null || true
     
     sudo -u "$NORMAL_USER" bash <<EOF
 ./scripts/feeds clean 2>&1 || true
 ./scripts/feeds update -a 2>&1 || true
 ./scripts/feeds install -a 2>&1 || true
+
+# 🔥 自动修复 1：ipset 内核头文件路径
+if [ -f "package/network/utils/ipset/Makefile" ]; then
+    sed -i 's|CONFIGURE_ARGS +=|CONFIGURE_ARGS += --with-kernel-include=$(LINUX_DIR)/include |' package/network/utils/ipset/Makefile
+    echo "已修复 ipset 内核头文件路径"
+fi
+
+# 🔥 自动修复 2：禁用无用包 linux-atm
+if [ -f ".config" ]; then
+    sed -i 's/CONFIG_PACKAGE_linux-atm=y/# CONFIG_PACKAGE_linux-atm is not set/' .config
+    echo "已禁用 linux-atm"
+fi
 EOF
-    
-    # 🔥 修复：STAGING_DIR 错误的根源
-    # 不在此时修改 target.mk，改为在编译前通过环境变量传递
-    # 移除了 include/target.mk 的写入操作
     
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig 2>&1 || true"
     
-    # 下载依赖（容错版）
-    log INFO "下载编译依赖包（失败不退出）..."
+    # 下载依赖
+    log INFO "下载编译依赖包..."
     retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS} 2>&1 || true'" || true
 }
 
@@ -509,18 +516,16 @@ do_build() {
     [[ ! -f ".config" ]] && die "缺少 .config"
     [[ "$CLEAN_BUILD" == "true" ]] && sudo -u "$NORMAL_USER" make clean 2>&1 || true
     
-    # 🔥 修复：在这里通过环境变量传递编译 Flag，解决 STAGING_DIR 问题
-    export TARGET_CFLAGS="-isystem $LEDE_DIR/staging_dir/target-x86_64_musl/usr/include -Wno-format-nonliteral"
+    # 🔥 移除错误的环境变量设置，让 OpenWrt 构建系统自动处理
     
     local ret=0
     set +e
-    # 直接单线程编译，避免多线程问题
     log INFO "执行: make -j1 V=s（CI 稳定优先）"
     sudo -u "$NORMAL_USER" make -j1 V=s 2>&1 | tee -a "$LOG_FILE"
     ret=${PIPESTATUS[0]}
     set -e
 
-    # 验证固件（放宽验证，只要有文件就算成功）
+    # 放宽验证标准
     local bin_dir="$LEDE_DIR/bin/targets"
     if [[ -d "$bin_dir" ]]; then
         local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | wc -l)
@@ -530,7 +535,6 @@ do_build() {
         fi
     fi
     
-    # 即使没找到固件，如果 make 返回 0 也不算失败
     if [[ $ret -eq 0 ]]; then
         log WARN "编译返回成功，但未找到固件文件，继续执行"
         return 0
