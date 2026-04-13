@@ -516,61 +516,55 @@ EOF
 do_build() {
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
     local MAKE_JOBS="${MAKE_JOBS:-2}"
-    log INFO "步骤6: 开始编译（线程：$MAKE_JOBS）"
+    log INFO "步骤6: 开始严格编译（线程：$MAKE_JOBS，无容错跳过）"
 
     cd "$LEDE_DIR"
     [[ ! -f ".config" ]] && die "缺少 .config"
     [[ "$CLEAN_BUILD" == "true" ]] && sudo -u "$NORMAL_USER" make clean
 
-    log INFO "开始多线程编译：make -j${MAKE_JOBS}"
+    # 临时文件用于收集错误和警告
+    local error_log=$(mktemp)
+    local warn_log=$(mktemp)
+
+    log INFO "执行: make -j${MAKE_JOBS} V=s"
     set +e
-    # 加入 -k 参数，跳过失败包继续编译
-    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
-    local ret=$?
+    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} V=s 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line; do
+        echo "$line"
+        if [[ "$line" =~ ERROR: ]] || [[ "$line" =~ "Error " ]] || [[ "$line" =~ "make["[0-9]+"]: ***" ]]; then
+            echo "$line" >> "$error_log"
+        elif [[ "$line" =~ WARNING: ]]; then
+            echo "$line" >> "$warn_log"
+        fi
+    done
+    local ret=${PIPESTATUS[0]}
     set -e
 
-    if [[ $ret -ne 0 ]]; then
-        log WARN "========================================================"
-        log WARN "多线程编译失败！尝试自动跳过失败包继续编译"
-        log WARN "========================================================"
-        
-        set +e
-        sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
-        ret=$?
-        set -e
-
-        if [[ $ret -ne 0 ]]; then
-            log WARN "跳过失败包后仍失败，降级为单线程详细编译"
-            set +e
-            sudo -u "$NORMAL_USER" make -j1 V=s -k IGNORE_ERRORS=1 2>&1 | tee -a "$LOG_FILE"
-            ret=$?
-            set -e
-        fi
-
-        # 即使有个别包失败，只要生成了固件就认为成功
-        local bin_dir="$LEDE_DIR/bin/targets"
-        if [[ -d "$bin_dir" ]]; then
-            local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) | wc -l)
-            if [[ $count -gt 0 ]]; then
-                log WARN "⚠️ 部分包编译失败，但已成功生成核心固件"
-                log WARN "失败的包已被跳过，不影响固件基本功能"
-                ret=0
-            fi
-        fi
-
-        if [[ $ret -ne 0 ]]; then
-            log ERROR "单线程编译失败！输出系统状态："
-            df -h | tee -a "$LOG_FILE"
-            free -m | tee -a "$LOG_FILE"
-            die "编译失败，请检查日志中 ERROR 所在行"
-        fi
+    # 输出汇总
+    if [[ -s "$warn_log" ]]; then
+        log WARN "========== 编译过程中发现的警告 =========="
+        cat "$warn_log" | tee -a "$LOG_FILE"
+        log WARN "=========================================="
     fi
 
-    [[ $ret -eq 0 ]] || die "编译失败"
+    if [[ $ret -ne 0 ]]; then
+        log ERROR "========== 编译失败，错误摘要 =========="
+        if [[ -s "$error_log" ]]; then
+            cat "$error_log" | tee -a "$LOG_FILE"
+        else
+            log ERROR "未捕获到具体错误行，请查看完整日志"
+        fi
+        log ERROR "=========================================="
+        rm -f "$error_log" "$warn_log"
+        die "编译失败，请根据上述错误信息修复（如缺失依赖、文件冲突、仓库失效等）"
+    fi
+
+    rm -f "$error_log" "$warn_log"
+
+    # 验证固件是否生成
     local bin_dir="$LEDE_DIR/bin/targets"
     [[ -d "$bin_dir" ]] || die "未找到固件输出目录"
     local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) | wc -l)
-    [[ $count -gt 0 ]] || die "未生成固件"
+    [[ $count -gt 0 ]] || die "未生成固件文件"
     log INFO "编译成功！固件数量：$count"
 }
 
