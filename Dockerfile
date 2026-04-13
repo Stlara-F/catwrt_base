@@ -34,7 +34,7 @@ RUN apt-get update && \
         htop iotop strace && \
     # 设置时区
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
-    # 配置 ccache
+    # 配置 ccache（限制 5GB，防止爆盘）
     ccache --max-size=5G && \
     # 清理
     apt-get clean && \
