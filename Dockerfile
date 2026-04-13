@@ -40,11 +40,14 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 🔥 修复：安全创建 builder 用户（避免家目录已存在警告）
+# 🔥 修复：安全创建 builder 用户，彻底消除家目录警告
 RUN groupadd -g 1000 builder && \
-    if ! id -u builder >/dev/null 2>&1; then \
-        useradd -u 1000 -g builder -m -s /bin/bash builder; \
+    # 先删除可能存在的旧用户（安全）
+    if id -u builder >/dev/null 2>&1; then \
+        userdel -r builder 2>/dev/null || true; \
     fi && \
+    # 重新创建用户
+    useradd -u 1000 -g builder -m -s /bin/bash builder && \
     echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder && \
     chmod 0440 /etc/sudoers.d/builder && \
     mkdir -p /home/lede /home/catwrt_base /output /var/log/catwrt-build && \
