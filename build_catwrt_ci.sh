@@ -143,6 +143,21 @@ check_env() {
     log INFO "配置 Git 全局安全目录防止权限阻断..."
     git config --global --add safe.directory '*'
     sudo -u "$NORMAL_USER" git config --global --add safe.directory '*'
+    # 🔥 新增：强制内存≥4GB、交换分区≥4GB检查
+    local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
+    local swap_gb=$(free -g | awk '/^Swap:/{print $2}')
+    [[ $mem_gb -lt 4 ]] && die "内存不足4GB，无法编译"
+    [[ $swap_gb -lt 4 ]] && log WARN "交换分区不足4GB，自动创建4GB交换文件" && {
+        fallocate -l 4G /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+    }
+
+    # 🔥 新增：全局清理权限污染，彻底解决root问题
+    fix_lede_permissions
+    log INFO "环境检查通过 | 用户: $NORMAL_USER | 架构: $TARGET_ARCH"
+    
 }
 
 # ---------------------------- 步骤1：依赖安装 ----------------------------
@@ -479,49 +494,44 @@ apply_custom() {
 
 # ---------------------------- 步骤5：Feeds 更新 ----------------------------
 update_feeds() {
-    # 函数内变量保护
     local LEDE_DIR="${LEDE_DIR:-/home/lede}"
     local NORMAL_USER="${NORMAL_USER:-builder}"
     local MAKE_JOBS="${MAKE_JOBS:-$(nproc)}"
     
     log INFO "步骤5: 更新 Feeds"
-    
     cd "$LEDE_DIR"
-    
-    # 🔧 feeds 也用浅克隆，节省存储
     export FEEDS_DEPTH=1
-    
-    # 清理旧的 feeds 缓存（避免冲突）
     sudo -u "$NORMAL_USER" rm -rf tmp/.packageinfo 2>/dev/null || true
     
     sudo -u "$NORMAL_USER" bash <<EOF
 ./scripts/feeds clean
 ./scripts/feeds update -a
 ./scripts/feeds install -a
+# 🔥 修复内核UAPI头文件宏重定义（核心修复）
+echo "TARGET_CFLAGS += -isystem \$(STAGING_DIR)/usr/include" >> include/target.mk
 EOF
-    
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig"
-    
     # 下载依赖（带重试）
     log INFO "下载编译依赖包..."
     retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS}'"
 }
 
+
 # ---------------------------- 步骤6：编译（核心优化） ----------------------------
 do_build() {
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
     local MAKE_JOBS="${MAKE_JOBS:-2}"
-    log INFO "步骤6: 开始严格编译（线程：$MAKE_JOBS，无容错跳过）"
-
+    log INFO "步骤6: 开始严格编译（线程：$MAKE_JOBS）"
     cd "$LEDE_DIR"
     [[ ! -f ".config" ]] && die "缺少 .config"
     [[ "$CLEAN_BUILD" == "true" ]] && sudo -u "$NORMAL_USER" make clean
-
-    # 临时文件用于收集错误和警告
+    
     local error_log=$(mktemp)
     local warn_log=$(mktemp)
+    local ret=0
 
+    # 🔥 首次多线程编译，失败自动切换单线程输出完整日志
     log INFO "执行: make -j${MAKE_JOBS} V=s"
     set +e
     sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} V=s 2>&1 | tee -a "$LOG_FILE" | while IFS= read -r line; do
@@ -532,36 +542,35 @@ do_build() {
             echo "$line" >> "$warn_log"
         fi
     done
-    local ret=${PIPESTATUS[0]}
+    ret=${PIPESTATUS[0]}
+
+    # 🔥 编译失败：自动单线程重编译，捕获完整错误
+    if [[ $ret -ne 0 ]]; then
+        log WARN "多线程编译失败，自动切换单线程定位错误：make -j1 V=s"
+        sudo -u "$NORMAL_USER" make -j1 V=s 2>&1 | tee -a "$LOG_FILE"
+        ret=${PIPESTATUS[0]}
+    fi
     set -e
 
     # 输出汇总
     if [[ -s "$warn_log" ]]; then
-        log WARN "========== 编译过程中发现的警告 =========="
+        log WARN "========== 编译警告汇总 =========="
         cat "$warn_log" | tee -a "$LOG_FILE"
-        log WARN "=========================================="
     fi
-
     if [[ $ret -ne 0 ]]; then
-        log ERROR "========== 编译失败，错误摘要 =========="
-        if [[ -s "$error_log" ]]; then
-            cat "$error_log" | tee -a "$LOG_FILE"
-        else
-            log ERROR "未捕获到具体错误行，请查看完整日志"
-        fi
-        log ERROR "=========================================="
+        log ERROR "========== 编译失败（真实错误） =========="
+        cat "$error_log" | tee -a "$LOG_FILE"
         rm -f "$error_log" "$warn_log"
-        die "编译失败，请根据上述错误信息修复（如缺失依赖、文件冲突、仓库失效等）"
+        die "编译失败，完整错误已写入日志"
     fi
 
-    rm -f "$error_log" "$warn_log"
-
-    # 验证固件是否生成
+    # 验证固件
     local bin_dir="$LEDE_DIR/bin/targets"
     [[ -d "$bin_dir" ]] || die "未找到固件输出目录"
     local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) | wc -l)
     [[ $count -gt 0 ]] || die "未生成固件文件"
     log INFO "编译成功！固件数量：$count"
+    rm -f "$error_log" "$warn_log"
 }
 
 # ---------------------------- 后处理 ----------------------------
