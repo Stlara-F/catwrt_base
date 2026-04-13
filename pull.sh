@@ -73,44 +73,33 @@ update_or_clone_repo() {
 
     if [ ! -d "$repo_dir" ]; then
         echo -e "${GREEN}Cloning $repo_name${NC}"
-
+        
+        # 加上 || true 捕获错误，防止失效的仓库导致整个脚本异常退出
         case "$repo_name" in
             UA2F)
-                git clone -b v4.5.0 "$repo_url" "$repo_dir"
+                git clone -b v4.5.0 --depth=1 "$repo_url" "$repo_dir" || echo -e "\033[0;31m[警告] 拉取 UA2F 失败，跳过...\033[0m"
                 ;;
             luci-app-alist)
-                git clone -b v3.40.0 "$repo_url" "$repo_dir"
+                git clone -b v3.40.0 --depth=1 "$repo_url" "$repo_dir" || echo -e "\033[0;31m[警告] 拉取 alist 失败，跳过...\033[0m"
                 ;;
             luci-app-ddns-go)
-                git clone -b lua "$repo_url" "$repo_dir"
+                git clone -b lua --depth=1 "$repo_url" "$repo_dir" || echo -e "\033[0;31m[警告] 拉取 ddns-go 失败，跳过...\033[0m"
                 ;;
             *)
-                git clone "$repo_url" "$repo_dir"
+                git clone --depth=1 "$repo_url" "$repo_dir" || echo -e "\033[0;31m[警告] 仓库 $repo_name 失效或网络错误，已跳过！\033[0m"
                 ;;
         esac
     else
         echo -e "${GREEN}Updating $repo_name${NC}"
-        cd "$repo_dir" || exit
-
+        cd "$repo_dir" || return
+        # 同样的防错处理
         case "$repo_name" in
-            UA2F)
-                git fetch --tags
-                git checkout v4.5.0
-                ;;
-            luci-app-alist)
-                git fetch --tags
-                git checkout v3.40.0
-                ;;
-            luci-app-ddns-go)
-                git fetch origin lua
-                git checkout lua
-                ;;
-            *)
-                git pull
-                ;;
+            UA2F) git fetch --tags && git checkout v4.5.0 || true ;;
+            luci-app-alist) git fetch --tags && git checkout v3.40.0 || true ;;
+            luci-app-ddns-go) git fetch origin lua && git checkout lua || true ;;
+            *) git pull origin master --rebase || git pull || true ;;
         esac
-
-        cd - || exit
+        cd - > /dev/null || exit
     fi
 }
 
@@ -151,35 +140,36 @@ update_wyc_plugins() {
 }
 
 update_bitsrunlogin_go() {
-    echo -e "${GREEN}Processing immortalwrt luci & packages for bitsrunlogin-go${NC}"
+    echo -e "${GREEN}Processing immortalwrt luci & packages (使用稀疏克隆极速拉取)${NC}"
 
     TEMP_DIR="/tmp/immortalwrt_bitsrunlogin"
+    rm -rf "$TEMP_DIR" && mkdir -p "$TEMP_DIR/luci" "$TEMP_DIR/packages"
 
-    if [ -d "$TEMP_DIR" ]; then
-        rm -rf "$TEMP_DIR"
-    fi
+    # 使用 Git 稀疏检出，只拉取特定文件夹，节省数百 MB 流量和大量时间
+    cd "$TEMP_DIR/luci"
+    git init && git remote add origin https://github.com/immortalwrt/luci.git
+    git config core.sparseCheckout true
+    echo "applications/luci-app-bitsrunlogin-go" >> .git/info/sparse-checkout
+    git pull --depth=1 origin master || echo -e "\033[0;31m[警告] 提取 luci-app-bitsrunlogin-go 失败\033[0m"
 
-    echo -e "${GREEN}Cloning immortalwrt/luci into $TEMP_DIR/luci${NC}"
-    git clone --depth=1 https://github.com/immortalwrt/luci.git  "$TEMP_DIR/luci"
+    cd "$TEMP_DIR/packages"
+    git init && git remote add origin https://github.com/immortalwrt/packages.git
+    git config core.sparseCheckout true
+    echo "net/bitsrunlogin-go" >> .git/info/sparse-checkout
+    git pull --depth=1 origin master || echo -e "\033[0;31m[警告] 提取 bitsrunlogin-go 失败\033[0m"
 
-    echo -e "${GREEN}Cloning immortalwrt/packages into $TEMP_DIR/packages${NC}"
-    git clone --depth=1 https://github.com/immortalwrt/packages.git  "$TEMP_DIR/packages"
-
+    # 复制到目标目录
     LUCI_SRC="$TEMP_DIR/luci/applications/luci-app-bitsrunlogin-go"
     LUCI_DST="$TARGET_DIR/luci-app-bitsrunlogin-go"
-    if [ -d "$LUCI_DST" ]; then
-        echo -e "${GREEN}Removing old luci-app-bitsrunlogin-go${NC}"
-        rm -rf "$LUCI_DST"
+    if [ -d "$LUCI_SRC" ]; then
+        rm -rf "$LUCI_DST" && cp -r "$LUCI_SRC" "$LUCI_DST"
     fi
-    cp -r "$LUCI_SRC" "$LUCI_DST"
 
     PKG_SRC="$TEMP_DIR/packages/net/bitsrunlogin-go"
     PKG_DST="$TARGET_DIR/bitsrunlogin-go"
-    if [ -d "$PKG_DST" ]; then
-        echo -e "${GREEN}Removing old bitsrunlogin-go${NC}"
-        rm -rf "$PKG_DST"
+    if [ -d "$PKG_SRC" ]; then
+        rm -rf "$PKG_DST" && cp -r "$PKG_SRC" "$PKG_DST"
     fi
-    cp -r "$PKG_SRC" "$PKG_DST"
 
     rm -rf "$TEMP_DIR"
 }
