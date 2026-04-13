@@ -95,32 +95,45 @@ check_env() {
     [[ -d "/home" ]] || die "/home 目录不存在"
     mkdir -p "$LOG_DIR"
     
-    # Docker 模式：跳过某些检查
+    # 🔥 核心修复：Docker 模式下跳过所有宿主机资源/权限检查
     if [[ "$CATWRT_DOCKER_MODE" == "1" ]]; then
         log INFO "运行在 Docker 模式中，跳过宿主机检查"
         id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
-        # 跳过其他宿主机检查
     else
-        # 磁盘空间（编译需要 50GB+）
+        # 非 Docker 模式（物理机/虚拟机）：严格检查
         local avail_gb=$(df -BG /home | awk 'NR==2 {print $4}' | tr -d 'G')
         [[ $avail_gb -gt 50 ]] || die "磁盘空间不足 50GB (当前: ${avail_gb}GB)"
         
-        # 内存检查（建议 4GB+）
         local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
         [[ $mem_gb -gt 3 ]] || log WARN "内存不足 4GB，编译可能缓慢或失败"
+        
+        # 🔥 修复：仅在非 Docker 模式下尝试创建交换文件，且失败不退出
+        local swap_gb=$(free -g | awk '/^Swap:/{print $2}')
+        if [[ $swap_gb -lt 4 ]]; then
+            log WARN "交换分区不足4GB，尝试自动创建4GB交换文件..."
+            if fallocate -l 4G /swapfile 2>/dev/null; then
+                chmod 600 /swapfile
+                mkswap /swapfile
+                if swapon /swapfile 2>/dev/null; then
+                    log INFO "交换文件创建成功"
+                else
+                    log WARN "交换文件挂载失败（权限不足），跳过交换设置"
+                fi
+            else
+                log WARN "交换文件创建失败，跳过交换设置"
+            fi
+        fi
     fi
     
-    # 🔧 GitHub Actions 专属优化：自动适配资源限制
+    # GitHub Actions 专属优化（无论是否 Docker 模式都执行）
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log INFO "🔧 检测到 GitHub Actions 环境，自动适配资源限制..."
-        # 限制线程为 4，内存峰值控制在 6GB 以内，不超过 7GB 上限
-        MAKE_JOBS=4
-        # 检查存储使用情况
+        MAKE_JOBS=4  # 限制线程为 4，防止内存溢出
         local workspace_used=$(df -BG . | awk 'NR==2 {print $3}' | tr -d 'G')
         log INFO "当前工作空间已使用: ${workspace_used}GB / 14GB 上限"
     fi
     
-    # 🔥 修复：增强网络检查，GitHub 失败时使用备用检测
+    # 网络检查（容错版）
     log INFO "检查网络连接..."
     if ! retry "curl -fsSL --connect-timeout 5 https://github.com"; then
         log WARN "GitHub 直连失败，尝试备用检测..."
@@ -133,7 +146,7 @@ check_env() {
     # 用户检查
     id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
     
-    # 文件描述符
+    # 文件描述符（容错）
     ulimit -n 65535 2>/dev/null || log WARN "无法设置 ulimit -n 65535"
     
     # 锁文件（防止重复运行）
@@ -145,26 +158,15 @@ check_env() {
     fi
     echo $$ > "$LOCK_FILE"
     
-    log INFO "环境检查通过 | 用户: $NORMAL_USER | 架构: $TARGET_ARCH | 自动模式: $AUTO_MODE"
-        # 全局解决 Git unsafe repository 阻断问题
+    # Git 安全目录配置（容错）
     log INFO "配置 Git 全局安全目录防止权限阻断..."
-    git config --global --add safe.directory '*'
-    sudo -u "$NORMAL_USER" git config --global --add safe.directory '*'
-    # 🔥 新增：强制内存≥4GB、交换分区≥4GB检查
-    local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
-    local swap_gb=$(free -g | awk '/^Swap:/{print $2}')
-    [[ $mem_gb -lt 4 ]] && die "内存不足4GB，无法编译"
-    [[ $swap_gb -lt 4 ]] && log WARN "交换分区不足4GB，自动创建4GB交换文件" && {
-        fallocate -l 4G /swapfile
-        chmod 600 /swapfile
-        mkswap /swapfile
-        swapon /swapfile
-    }
-
-    # 🔥 新增：全局清理权限污染，彻底解决root问题
-    fix_lede_permissions
-    log INFO "环境检查通过 | 用户: $NORMAL_USER | 架构: $TARGET_ARCH"
+    git config --global --add safe.directory '*' 2>/dev/null || true
+    sudo -u "$NORMAL_USER" git config --global --add safe.directory '*' 2>/dev/null || true
     
+    # 权限清理
+    fix_lede_permissions
+    
+    log INFO "环境检查通过 | 用户: $NORMAL_USER | 架构: $TARGET_ARCH | 自动模式: $AUTO_MODE"
 }
 
 # ---------------------------- 步骤1：依赖安装 ----------------------------
