@@ -507,8 +507,10 @@ update_feeds() {
 ./scripts/feeds clean
 ./scripts/feeds update -a
 ./scripts/feeds install -a
-# 🔥 修复内核UAPI头文件宏重定义（核心修复）
+# 🔥 修复内核UAPI头文件宏重定义
 echo "TARGET_CFLAGS += -isystem \$(STAGING_DIR)/usr/include" >> include/target.mk
+# 🔥 禁用nftables格式字符串非字面量警告
+echo "TARGET_CFLAGS += -Wno-format-nonliteral" >> include/target.mk
 EOF
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig"
@@ -516,7 +518,6 @@ EOF
     log INFO "下载编译依赖包..."
     retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS}'"
 }
-
 
 # ---------------------------- 步骤6：编译（核心优化） ----------------------------
 do_build() {
