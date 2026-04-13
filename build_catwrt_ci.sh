@@ -120,8 +120,15 @@ check_env() {
         log INFO "当前工作空间已使用: ${workspace_used}GB / 14GB 上限"
     fi
     
-    # 网络检查（带重试）
-    retry "curl -fsSL --connect-timeout 10 https://github.com"
+    # 🔥 修复：增强网络检查，GitHub 失败时使用备用检测
+    log INFO "检查网络连接..."
+    if ! retry "curl -fsSL --connect-timeout 5 https://github.com"; then
+        log WARN "GitHub 直连失败，尝试备用检测..."
+        if ! retry "curl -fsSL --connect-timeout 5 https://www.baidu.com"; then
+            die "网络连接完全失败，请检查网络"
+        fi
+        log INFO "备用网络检测通过，继续编译"
+    fi
     
     # 用户检查
     id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
