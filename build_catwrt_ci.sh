@@ -469,7 +469,7 @@ apply_custom() {
         chmod +x "$LEDE_DIR/package/lean/default-settings/files/zzz-default-settings"
     fi
     
-    # cattools（修复文件冲突：改为 cattools.sh 避免与 base-files 同名）
+    # cattools（修复文件冲突：安装到 /usr/sbin/cattools 避免与 base-files 冲突）
     mkdir -p "$LEDE_DIR/package/base-files/files/usr/sbin"
     retry "curl -fsSL https://raw.miaoer.net/cattools/cattools.sh -o $LEDE_DIR/package/base-files/files/usr/sbin/cattools"
     chmod +x "$LEDE_DIR/package/base-files/files/usr/sbin/cattools"
