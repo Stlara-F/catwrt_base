@@ -38,17 +38,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      # ---------- 核心修改：补全所有清理项（新增docker-images: true） ----------
-      - name: Free Disk Space
+      # ---------- 极限清理磁盘 + 开启 Swap ----------
+      - name: Free Disk Space & Add Swap
         uses: jlumbroso/free-disk-space@main
         with:
-          tool-cache: true      # 清理预装工具
-          android: true         # 移除Android SDK
-          dotnet: true          # 移除.NET
-          haskell: true         # 移除Haskell
-          large-packages: true  # 移除大型无用包
-          docker-images: true   # 新增：清理预装Docker镜像（释放10+GB）
-          swap-storage: true    # 开启Swap虚拟内存
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true   # 清理预装 Docker 镜像，释放 10+ GB
+          swap-storage: true    # 启用 4GB Swap，防止内存 OOM
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -145,4 +145,3 @@ jobs:
           echo "**资源使用:**" >> $GITHUB_STEP_SUMMARY
           df -h . | awk 'NR==2 {print "- 工作空间: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
           free -h | awk 'NR==2 {print "- 内存: " $3 " / " $2}' >> $GITHUB_STEP_SUMMARY
-
