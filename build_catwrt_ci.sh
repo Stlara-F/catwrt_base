@@ -601,7 +601,9 @@ post_process() {
         local workspace_used=$(df -BG . | awk 'NR==2 {print $3}' | tr -d 'G')
         log INFO "清理后工作空间已使用: ${workspace_used}GB / 14GB 上限，完全在限制内！"
     fi
-    
+    # 收集 Makefile 依赖缺失警告（从日志中提取）
+    grep -E "WARNING: Makefile.*has a (build )?dependency on.*which does not exist" "$LOG_FILE" > "$output_dir/missing-deps.txt" || true
+
     log INFO "输出目录: $output_dir"
     
     # 发送成功通知
