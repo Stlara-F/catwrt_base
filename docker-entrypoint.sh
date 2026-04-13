@@ -53,10 +53,10 @@ validate_environment() {
         command -v "$cmd" >/dev/null 2>&1 || log_error "缺少必要命令: $cmd"
     done
     
-    # 核心修改：全局放行Git安全目录，替换原有仅针对/home/lede的配置
-    log_info "全局配置Git安全目录，避免子模块遍历卡顿..."
-    git config --global --add safe.directory '*'
-    sudo -u builder git config --global --add safe.directory '*'
+    # 🔥 修复：Git 安全目录配置容错
+    log_info "全局配置Git安全目录..."
+    git config --global --add safe.directory '*' 2>/dev/null || true
+    sudo -u builder git config --global --add safe.directory '*' 2>/dev/null || true
     
     # 检查磁盘空间（至少 10GB 可用）
     local avail=$(df -BG /output | awk 'NR==2 {print $4}' | tr -d 'G')
