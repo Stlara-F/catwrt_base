@@ -498,15 +498,25 @@ if [ -f ".config" ]; then
     echo "已禁用 linux-atm"
 fi
 
-# 🔥 自动修复 3：禁用 netkeeper（解决编译失败）
+# 🔥 终极修复：直接删除 netkeeper 插件目录（最彻底）
+if [ -d "package/feed-netkeeper" ]; then
+    rm -rf package/feed-netkeeper
+    echo "已删除 netkeeper 插件（不兼容 ppp-2.5.2）"
+fi
+
+# 🔥 双重保险：确保 .config 中没有 netkeeper
 if [ -f ".config" ]; then
-    sed -i 's/CONFIG_PACKAGE_netkeeper=y/# CONFIG_PACKAGE_netkeeper is not set/' .config
-    echo "已禁用 netkeeper（老旧插件，编译失败）"
+    sed -i '/CONFIG_PACKAGE_netkeeper/d' .config
+    echo "# CONFIG_PACKAGE_netkeeper is not set" >> .config
 fi
 EOF
     
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig 2>&1 || true"
+    
+    # 🔥 三重保险：defconfig 后再次确认删除 netkeeper
+    sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && [ -d 'package/feed-netkeeper' ] && rm -rf package/feed-netkeeper || true"
+    sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && sed -i '/CONFIG_PACKAGE_netkeeper/d' .config && echo '# CONFIG_PACKAGE_netkeeper is not set' >> .config"
     
     # 下载依赖
     log INFO "下载编译依赖包..."
