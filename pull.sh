@@ -296,6 +296,38 @@ main() {
     update_luci_theme_argon
     rm_lean_ddnsgo
     echo -e "${GREEN}========== 全部完成，日志见 $LOG_FILE ==========${NC}"
+        # 🔥 新增：自动修复高优先级代码错误
+    log INFO "========== 自动应用源码补丁 =========="
+    apply_patches
+    echo -e "${GREEN}========== 全部完成 ==========${NC}"
+}
+
+# 🔥 新增补丁函数
+apply_patches() {
+    local LEDE_PKG="/home/lede/package"
+    # 1. 修复fast-classifier逻辑错误
+    local fast_classifier="$LEDE_PKG/fast-classifier/src/fast-classifier.c"
+    if [[ -f "$fast_classifier" ]]; then
+        sed -i 's/if (sis->src_dev && IFF_EBRIDGE/if (sis->src_dev && (sis->src_dev->flags \& IFF_EBRIDGE)/g' "$fast_classifier"
+        sed -i 's/if (sis->dest_dev && IFF_EBRIDGE/if (sis->dest_dev && (sis->dest_dev->flags \& IFF_EBRIDGE)/g' "$fast_classifier"
+        sed -i '1i int fast_classifier_recv(struct sk_buff *skb);' "$fast_classifier"
+        echo "✅ 修复 fast-classifier 逻辑错误"
+    fi
+
+    # 2. 修复appfilter格式字符串类型不匹配
+    local appfilter_ubus="$LEDE_PKG/OpenAppFilter/src/appfilter_ubus.c"
+    if [[ -f "$appfilter_ubus" ]]; then
+        sed -i 's/%d\\n", period_count, json_object_array_length/%zu\\n", period_count, json_object_array_length/g' "$appfilter_ubus"
+        sed -i 's/char \*mac = json_object_get_string/const char \*mac = json_object_get_string/g' "$appfilter_ubus"
+        echo "✅ 修复 appfilter 格式字符串/const 警告"
+    fi
+
+    # 3. 修复Rust bootstrap.toml缺失change-id
+    local rust_bootstrap="$LEDE_PKG/rust/bootstrap.toml"
+    if [[ -f "$rust_bootstrap" ]]; then
+        sed -i '1i change-id = "ignore"' "$rust_bootstrap"
+        echo "✅ 修复 Rust bootstrap 警告"
+    fi
 }
 
 main "$@"
