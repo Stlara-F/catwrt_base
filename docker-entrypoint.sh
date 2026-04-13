@@ -55,6 +55,7 @@ validate_environment() {
     
     # 核心修改：全局放行Git安全目录，替换原有仅针对/home/lede的配置
     log_info "全局配置Git安全目录，避免子模块遍历卡顿..."
+    git config --global --add safe.directory '*'
     sudo -u builder git config --global --add safe.directory '*'
     
     # 检查磁盘空间（至少 10GB 可用）
