@@ -507,9 +507,9 @@ update_feeds() {
 ./scripts/feeds clean
 ./scripts/feeds update -a
 ./scripts/feeds install -a
-# 🔥 修复内核UAPI头文件宏重定义
+# 🔥 修复：确保目录存在后再写入（内核头文件冲突+禁用nftables警告）
+mkdir -p include
 echo "TARGET_CFLAGS += -isystem \$(STAGING_DIR)/usr/include" >> include/target.mk
-# 🔥 禁用nftables格式字符串非字面量警告
 echo "TARGET_CFLAGS += -Wno-format-nonliteral" >> include/target.mk
 EOF
     # 应用配置
