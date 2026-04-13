@@ -28,26 +28,21 @@ RUN apt-get update && \
         python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig \
         texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
         sudo time tzdata file gosu \
-        # 额外依赖（naive 编译需要）
-        generate-ninja \
-        # 调试工具
-        htop iotop strace && \
-
-        sudo time tzdata file gosu \
         generate-ninja \
         htop iotop strace \
-        # 🔥 新增：修复缺失依赖
+        # 修复缺失依赖
         libattr1-dev libdebuginfod-dev libipt-dev python3-dev doxygen valgrind libcap-ng-dev \
         rustc cargo && \
-    # 🔥 新增：禁用nftables格式字符串非字面量警告
+    # 禁用 nftables 格式字符串非字面量警告
     echo 'TARGET_CFLAGS += -Wno-format-nonliteral' >> /home/lede/include/target.mk && \
     # 设置时区
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
-    # 配置 ccache（限制 5GB，防止爆盘）
+    # 配置 ccache
     ccache --max-size=5G && \
     # 清理
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 
 # 创建普通用户（编译 LEDE 必须使用非 root）
 # 使用固定 UID/GID 1000，完美匹配 GitHub Actions runner 的默认用户，彻底解决权限问题！
