@@ -469,10 +469,11 @@ apply_custom() {
         chmod +x "$LEDE_DIR/package/lean/default-settings/files/zzz-default-settings"
     fi
     
-    # cattools
-    mkdir -p "$LEDE_DIR/package/base-files/files/usr/bin"
-    retry "curl -fsSL https://raw.miaoer.net/cattools/cattools.sh -o $LEDE_DIR/package/base-files/files/usr/bin/cattools"
-    chmod +x "$LEDE_DIR/package/base-files/files/usr/bin/cattools"
+    # cattools（修复文件冲突：改为 cattools.sh 避免与 base-files 同名）
+    mkdir -p "$LEDE_DIR/package/base-files/files/usr/sbin"
+    retry "curl -fsSL https://raw.miaoer.net/cattools/cattools.sh -o $LEDE_DIR/package/base-files/files/usr/sbin/cattools"
+    chmod +x "$LEDE_DIR/package/base-files/files/usr/sbin/cattools"
+    # 同时确保 config_generate 权限
     chmod +x "$LEDE_DIR/package/base-files/files/bin/config_generate"
     
     # 关键：修复权限
