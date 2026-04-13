@@ -32,6 +32,15 @@ RUN apt-get update && \
         generate-ninja \
         # 调试工具
         htop iotop strace && \
+
+        sudo time tzdata file gosu \
+        generate-ninja \
+        htop iotop strace \
+        # 🔥 新增：修复缺失依赖
+        libattr1-dev libdebuginfod-dev libipt-dev python3-dev doxygen valgrind libcap-ng-dev \
+        rustc cargo && \
+    # 🔥 新增：禁用nftables格式字符串非字面量警告
+    echo 'TARGET_CFLAGS += -Wno-format-nonliteral' >> /home/lede/include/target.mk && \
     # 设置时区
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     # 配置 ccache（限制 5GB，防止爆盘）
