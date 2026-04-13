@@ -40,9 +40,11 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# 创建普通用户
+# 🔥 修复：安全创建 builder 用户（避免家目录已存在警告）
 RUN groupadd -g 1000 builder && \
-    useradd -u 1000 -g builder -m -s /bin/bash builder && \
+    if ! id -u builder >/dev/null 2>&1; then \
+        useradd -u 1000 -g builder -m -s /bin/bash builder; \
+    fi && \
     echo "builder ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/builder && \
     chmod 0440 /etc/sudoers.d/builder && \
     mkdir -p /home/lede /home/catwrt_base /output /var/log/catwrt-build && \
@@ -51,11 +53,14 @@ RUN groupadd -g 1000 builder && \
 # 声明 volume
 VOLUME ["/home/builder/.ccache", "/home/lede/dl"]
 
-# 预下载 ImmortalWrt 环境脚本
+# 🔥 修复：预下载 ImmortalWrt 环境脚本，添加错误处理
 RUN curl -fsSL -o /usr/local/bin/init_build_environment.sh \
     https://build-scripts.immortalwrt.org/init_build_environment.sh && \
     chmod +x /usr/local/bin/init_build_environment.sh && \
-    bash /usr/local/bin/init_build_environment.sh || true
+    # 🔥 修复：临时关闭 pipefail，避免 broken pipe 导致失败
+    set +o pipefail && \
+    bash /usr/local/bin/init_build_environment.sh 2>&1 | head -n 200 || true && \
+    set -o pipefail
 
 # 复制编译脚本
 COPY --chown=builder:builder build_catwrt_ci.sh /usr/local/bin/catwrt-build
