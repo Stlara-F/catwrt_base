@@ -53,14 +53,13 @@ RUN groupadd -g 1000 builder && \
 # 声明 volume
 VOLUME ["/home/builder/.ccache", "/home/lede/dl"]
 
-# 🔥 修复：预下载 ImmortalWrt 环境脚本，添加错误处理
+# 🔥 修复：预下载 ImmortalWrt 环境脚本，显式使用 bash 避免 pipefail 错误
 RUN curl -fsSL -o /usr/local/bin/init_build_environment.sh \
     https://build-scripts.immortalwrt.org/init_build_environment.sh && \
     chmod +x /usr/local/bin/init_build_environment.sh && \
-    # 🔥 修复：临时关闭 pipefail，避免 broken pipe 导致失败
-    set +o pipefail && \
-    bash /usr/local/bin/init_build_environment.sh 2>&1 | head -n 200 || true && \
-    set -o pipefail
+    # 显式使用 bash 执行，临时关闭 pipefail 避免 broken pipe
+    bash -c 'set +o pipefail && /usr/local/bin/init_build_environment.sh 2>&1 | head -n 200 || true'
+
 
 # 复制编译脚本
 COPY --chown=builder:builder build_catwrt_ci.sh /usr/local/bin/catwrt-build
