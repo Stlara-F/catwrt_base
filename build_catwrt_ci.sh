@@ -497,6 +497,12 @@ if [ -f ".config" ]; then
     sed -i 's/CONFIG_PACKAGE_linux-atm=y/# CONFIG_PACKAGE_linux-atm is not set/' .config
     echo "已禁用 linux-atm"
 fi
+
+# 🔥 自动修复 3：禁用 netkeeper（解决编译失败）
+if [ -f ".config" ]; then
+    sed -i 's/CONFIG_PACKAGE_netkeeper=y/# CONFIG_PACKAGE_netkeeper is not set/' .config
+    echo "已禁用 netkeeper（老旧插件，编译失败）"
+fi
 EOF
     
     # 应用配置
