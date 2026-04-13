@@ -211,14 +211,14 @@ install_deps() {
 setup_repos() {
     log INFO "步骤2: 准备代码仓库"
     
-    # CatWrt Base
+    # CatWrt Base（指定 main 分支，避免 Git 默认分支提示）
     if [[ -d "$CATWRT_BASE_DIR/.git" ]]; then
         cd "$CATWRT_BASE_DIR"
         retry "git pull origin main"
     else
         rm -rf "$CATWRT_BASE_DIR" 2>/dev/null || true
-        # 🔧 浅克隆，只克隆最新提交，节省98%的存储！
-        retry "git clone --depth=1 https://github.com/miaoermua/catwrt_base.git $CATWRT_BASE_DIR"
+        # 🔥 修复：显式指定 --branch main，消除 Git 分支名提示
+        retry "git clone --depth=1 --branch main https://github.com/miaoermua/catwrt_base.git $CATWRT_BASE_DIR"
     fi
     chmod +x "$CATWRT_BASE_DIR"/*.sh 2>/dev/null || true
     
@@ -230,14 +230,14 @@ setup_repos() {
         sudo -u "$NORMAL_USER" git fetch origin --depth=1
         sudo -u "$NORMAL_USER" git reset --hard origin/master
     else
-        # 🔧 处理非git仓库的情况，完美兼容挂载点！
+        # 处理非 git 仓库的情况
         local dl_is_mount=false
         local dl_cache=""
         local lede_already_setup=false
         
         if [[ -d "$LEDE_DIR" ]]; then
             log WARN "/home/lede 目录存在但非 Git 仓库，尝试安全清理..."
-            # 检查是否有子目录是挂载点
+            # 检查挂载点
             local mounts=$(mount | grep "$LEDE_DIR" | awk '{print $3}' || true)
             if [[ -n "$mounts" ]]; then
                 for mnt in $mounts; do
@@ -253,41 +253,40 @@ setup_repos() {
                 done
             fi
             
-            # 🔧 如果 dl 是挂载点，我们不能移动它，就地处理！
+            # dl 是挂载点：就地处理
             if [[ "$dl_is_mount" == true ]]; then
                 log WARN "dl 是缓存挂载点，无法移动，就地克隆源码..."
                 # 删掉除了 dl 之外的所有内容
                 find "$LEDE_DIR" -mindepth 1 -maxdepth 1 -not -name dl -exec rm -rf {} \; 2>/dev/null || true
-                # 就地初始化 git，不用移动挂载点
+                # 🔥 修复：就地初始化 git 时显式指定 master 分支（匹配 lede 仓库默认分支）
                 cd "$LEDE_DIR"
-                sudo -u "$NORMAL_USER" git init
+                sudo -u "$NORMAL_USER" git init -b master
+                sudo -u "$NORMAL_USER" git config --local init.defaultBranch master  # 彻底消除分支提示
                 sudo -u "$NORMAL_USER" git remote add origin https://github.com/coolsnowwolf/lede.git
                 retry "sudo -u $NORMAL_USER git fetch origin --depth=1"
                 sudo -u "$NORMAL_USER" git reset --hard origin/master
                 # 修复权限
                 chown -R "$NORMAL_USER":"$NORMAL_USER" "$LEDE_DIR"
                 fix_lede_permissions
-                # 标记已经处理完了
                 lede_already_setup=true
             else
-                # 普通目录，用原来的临时移出方案
+                # 普通目录：临时移出 dl 缓存
                 if [[ -d "$LEDE_DIR/dl" ]]; then
                     log WARN "发现 dl 缓存目录，临时移出以避免克隆失败..."
                     dl_cache="/tmp/lede-dl-cache-$(date +%s)"
                     mv "$LEDE_DIR/dl" "$dl_cache"
                 fi
-                # 删掉整个目录，确保 git clone 能成功
                 rm -rf "$LEDE_DIR" 2>/dev/null || true
             fi
         fi
         
-        # 如果还没处理，就正常克隆
+        # 正常克隆（如果还没处理）
         if [[ ! "$lede_already_setup" == true ]]; then
             log INFO "克隆 LEDE 源码..."
-            # 🔧 浅克隆，只克隆最新提交，把30G的历史压缩到500M！
-            retry "sudo -u $NORMAL_USER git clone --depth=1 https://github.com/coolsnowwolf/lede.git $LEDE_DIR"
+            # 🔥 修复：显式指定 master 分支
+            retry "sudo -u $NORMAL_USER git clone --depth=1 --branch master https://github.com/coolsnowwolf/lede.git $LEDE_DIR"
             
-            # 恢复 dl 缓存目录，节省下载时间
+            # 恢复 dl 缓存
             if [[ -n "$dl_cache" && -d "$dl_cache" ]]; then
                 log WARN "恢复 dl 缓存目录，节省下载时间..."
                 mv "$dl_cache" "$LEDE_DIR/dl"
@@ -298,7 +297,6 @@ setup_repos() {
         fi
     fi
 }
-
 
 # ---------------------------- 步骤3：智能配置选择 ----------------------------
 select_config() {
