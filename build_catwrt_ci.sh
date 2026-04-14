@@ -56,7 +56,7 @@ die() {
     exit 1
 }
 
-# 带重试的函数执行
+# 带重试的函数执行（修复版）
 retry() {
     local n=1
     local cmd="$*"
@@ -71,8 +71,9 @@ retry() {
         ((n++))
         log WARN "命令失败，$((2**n)) 秒后重试..."
         sleep $((2**n))
-    fi
+    done  # ✅ 修复：while 循环用 done 结束
 }
+
 
 # 检查并修复 LEDE 权限（关键：防止 root 污染）
 fix_lede_permissions() {
