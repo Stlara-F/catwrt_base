@@ -18,10 +18,10 @@ on:
         description: '手动指定版本标签'
         required: false
         default: ''
-      # 选择固件架构
+      # 保留：手动选择固件架构（仅参考，不参与CI构建）
       firmware_arch:
-        description: '选择要编译的固件架构'
-        required: true
+        description: '选择要编译的固件架构（仅测试参考）'
+        required: false
         default: 'amd64'
         type: choice
         options:
@@ -32,17 +32,15 @@ on:
           - meson32
           - rkarm64
       firmware_ver:
-        description: '固件版本（如 v24.9）'
+        description: '固件版本（仅测试参考）'
         required: false
         default: 'v24.9'
 
+# 🔥 核心修复：删除所有绑定固件架构的全局参数！仅保留基础配置
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
-  # 自动接收手动选择的架构和版本
-  SELECTED_ARCH: ${{ inputs.firmware_arch || 'amd64' }}
-  SELECTED_VER: ${{ inputs.firmware_ver || 'v24.9' }}
 
 jobs:
   build-and-push:
@@ -70,7 +68,7 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # 支持多架构
+      # 支持多架构：Docker运行架构（宿主机CPU架构）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         with:
@@ -93,14 +91,14 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type:ref,event=branch
-            type:semver,pattern={{version}}
-            type:semver,pattern={{major}}.{{minor}}
-            type:semver,pattern={{major}}
-            type:sha,prefix={{branch}}-
-            type:raw,value=latest,enable={{is_default_branch}}
-            type:schedule,pattern={{date 'YYYYMMDD'}}
-            type:raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
       # 构建单架构测试镜像
       - name: Build and export for testing
@@ -117,11 +115,11 @@ jobs:
           secrets: |
             "github_token=${{ secrets.GITHUB_TOKEN }}"
 
-      # 🔥 核心：测试时传入选中的架构参数，验证脚本
+      # 🔥 修复：测试仅验证镜像环境，不绑定任何固件架构
       - name: Test image
         run: |
-          echo "测试容器启动 + 架构传参..."
-          docker run --rm ${{ env.IMAGE_NAME }}:test --help 2>&1 | grep -q "CatWrt" || echo "警告: 未找到 CatWrt 帮助信息，继续测试..."
+          echo "测试容器启动..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test --help 2>&1 | grep -q "CatWrt" || echo "警告: 未找到帮助信息，继续测试"
           
           echo "测试环境完整性..."
           docker run --rm ${{ env.IMAGE_NAME }}:test bash -c "
@@ -131,10 +129,10 @@ jobs:
             echo '所有测试通过!'
           "
           
-          echo "测试编译脚本语法 + 传入选中架构: ${{ env.SELECTED_ARCH }} ..."
-          docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build 2>/dev/null || echo "警告: 脚本路径可能不同，跳过语法测试"
+          echo "测试编译脚本语法..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build 2>/dev/null || true
 
-      # 构建并推送多架构镜像
+      # 构建并推送多架构Docker镜像（宿主机架构：amd64+arm64）
       - name: Build and push (Multi-Arch)
         uses: docker/build-push-action@v7
         with:
@@ -151,14 +149,30 @@ jobs:
           secrets: |
             "github_token=${{ secrets.GITHUB_TOKEN }}"
 
-      # 🔥 修复语法 + 动态生成：命令自动替换为你选中的架构
+      # 🔥 修复：完整闭合README，无语法错误
       - name: Generate Docker Hub README
         run: |
-          cat > DOCKER_README.md << 'EOF'
+          cat > DOCKER_README.md << EOF
           # CatWrt Builder Docker 镜像
           全自动 CatWrt 编译环境，支持多架构固件编译
-          
+
           ## 🚀 快速使用
           ### 拉取镜像
-          ```bash
+          \`\`\`bash
           docker pull docker.io/${{ secrets.DOCKER_USERNAME }}/catwrt-builder:latest
+          \`\`\`
+
+          ### 编译命令（通用）
+          \`\`\`bash
+          docker run --rm \\
+            -v \$(pwd)/output:/output \\
+            docker.io/${{ secrets.DOCKER_USERNAME }}/catwrt-builder:latest \\
+            --auto --arch=amd64 --ver=v24.9
+          \`\`\`
+          EOF
+
+      - name: Summary
+        run: |
+          echo "## Docker 镜像构建完成 ✅" >> $GITHUB_STEP_SUMMARY
+          echo "**镜像地址:** \`${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "**支持架构:** linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
