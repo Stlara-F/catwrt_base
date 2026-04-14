@@ -3,7 +3,7 @@
 # 使用方式: 
 #   docker run --rm -v ./output:/output catwrt/builder --auto --arch=amd64 --ver=v24.9
 
-FROM ubuntu:22.04
+FROM ubuntu:25.10
 
 # 环境变量
 ENV DEBIAN_FRONTEND=noninteractive
