@@ -1,5 +1,5 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.5 - 修复架构适配+全局参数传递)
+# CatWrt 完全自动化编译脚本 (v2.5 - 修复架构适配)
 # 真正无人值守，零交互，失败自动重试，完美适配 GitHub Actions 资源限制
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
@@ -56,7 +56,7 @@ die() {
     exit 1
 }
 
-# 带重试的函数执行（修复版）
+# 带重试的函数执行
 retry() {
     local n=1
     local cmd="$*"
@@ -71,9 +71,8 @@ retry() {
         ((n++))
         log WARN "命令失败，$((2**n)) 秒后重试..."
         sleep $((2**n))
-    done  # ✅ 修复：while 循环用 done 结束
+    done
 }
-
 
 # 检查并修复 LEDE 权限（关键：防止 root 污染）
 fix_lede_permissions() {
@@ -669,10 +668,7 @@ main() {
         USE_PRESET_CONFIG=true
     fi
     
-    # ✅ 核心修复：全局导出所有变量（覆盖环境变量，确保全脚本生效）
-    export CATWRT_USER="$NORMAL_USER"
-    export CATWRT_ARCH="$TARGET_ARCH"
-    export CATWRT_VER="$TARGET_VER"
+    # 全局导出所有变量，确保 sudo 子进程能继承
     export NORMAL_USER TARGET_ARCH TARGET_VER
     export CLEAN_BUILD SINGLE_THREAD_FIRST AUTO_RETRY_SINGLE
     export DISCORD_WEBHOOK CATWRT_DOCKER_MODE
