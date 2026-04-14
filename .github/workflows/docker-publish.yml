@@ -18,7 +18,7 @@ on:
         description: '手动指定版本标签'
         required: false
         default: ''
-      # 选择固件架构
+      # 👇 这是【编译目标：路由器型号】保留不动
       firmware_arch:
         description: '选择要编译的固件架构'
         required: true
@@ -40,7 +40,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/catwrt-builder
-  # 自动接收手动选择的架构和版本
   SELECTED_ARCH: ${{ inputs.firmware_arch || 'amd64' }}
   SELECTED_VER: ${{ inputs.firmware_ver || 'v24.9' }}
 
@@ -58,7 +57,6 @@ jobs:
         with:
           fetch-depth: 1
 
-      # 极限清理磁盘 + 开启 Swap
       - name: Free Disk Space & Add Swap
         uses: jlumbroso/free-disk-space@main
         with:
@@ -70,11 +68,11 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # 支持多架构
+      # 👇 【全覆盖标准宿主机CPU架构】QEMU 支持所有主流硬件
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         with:
-          platforms: linux/amd64,linux/arm64,linux/arm/v7
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/riscv64,linux/386
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -102,7 +100,6 @@ jobs:
             type:schedule,pattern={{date 'YYYYMMDD'}}
             type:raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
-      # 构建单架构测试镜像
       - name: Build and export for testing
         uses: docker/build-push-action@v7
         with:
@@ -117,24 +114,29 @@ jobs:
           secrets: |
             "github_token=${{ secrets.GITHUB_TOKEN }}"
 
-      # 🔥 核心：测试时传入选中的架构参数，验证脚本
+      # 👇 【修复】测试时传递环境变量，架构100%生效
       - name: Test image
         run: |
           echo "测试容器启动 + 架构传参..."
-          docker run --rm ${{ env.IMAGE_NAME }}:test --help 2>&1 | grep -q "CatWrt" || echo "警告: 未找到 CatWrt 帮助信息，继续测试..."
+          docker run --rm \
+            -e CATWRT_ARCH=${{ env.SELECTED_ARCH }} \
+            -e CATWRT_VER=${{ env.SELECTED_VER }} \
+            ${{ env.IMAGE_NAME }}:test --help
           
           echo "测试环境完整性..."
-          docker run --rm ${{ env.IMAGE_NAME }}:test bash -c "
+          docker run --rm \
+            -e CATWRT_ARCH=${{ env.SELECTED_ARCH }} \
+            ${{ env.IMAGE_NAME }}:test bash -c "
             command -v git make gcc curl sudo ccache
             id builder
             test -w /home/lede && test -w /output
             echo '所有测试通过!'
           "
           
-          echo "测试编译脚本语法 + 传入选中架构: ${{ env.SELECTED_ARCH }} ..."
-          docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build 2>/dev/null || echo "警告: 脚本路径可能不同，跳过语法测试"
+          echo "测试编译脚本语法..."
+          docker run --rm ${{ env.IMAGE_NAME }}:test bash -n /usr/local/bin/catwrt-build
 
-      # 构建并推送多架构镜像
+      # 👇 【标准宿主机架构】推送到Docker Hub（支持99%设备）
       - name: Build and push (Multi-Arch)
         uses: docker/build-push-action@v7
         with:
@@ -143,7 +145,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          platforms: linux/amd64,linux/arm64
+          # 👇 这里是【宿主机CPU指令集】，绝对不写路由器型号！
+          platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/riscv64
           cache-from: type=gha
           cache-to: type=gha,mode=max
           build-args: |
@@ -151,7 +154,6 @@ jobs:
           secrets: |
             "github_token=${{ secrets.GITHUB_TOKEN }}"
 
-      # 🔥 修复语法 + 动态生成：命令自动替换为你选中的架构
       - name: Generate Docker Hub README
         run: |
           cat > DOCKER_README.md << 'EOF'
