@@ -24,7 +24,7 @@ RUN apt-get update && \
         ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
         python3-setuptools qemu-utils rsync scons squashfs-tools subversion swig \
         texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev \
-        sudo time tzdata file gosu libattr1-dev libdebuginfod-dev libipt-dev python3-dev libcap-ng-dev \
+        sudo time tzdata file gosu libattr1-dev libipt-dev python3-dev libcap-ng-dev \
     # ==================== 安全补丁2：删除编译完全不需要的高危包 ====================
     && apt-get remove -y rustc cargo doxygen valgrind htop iotop strace && \
     # 设置时区
