@@ -1,11 +1,16 @@
 #!/bin/bash
-# CatWrt 容器入口点 (优化版)
-# 支持调试模式、自动权限修复、信号处理
+# CatWrt 容器入口点 (优化版+全局变量适配)
+# 支持调试模式、自动权限修复、信号处理、全局架构变量
 
 set -euo pipefail
 
 # 颜色输出
 GREEN='\033[0;32m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BLUE='\033[0;34m'; NC='\033[0m'
+
+# ✅ 核心：对接全局环境变量（与编译脚本完全一致）
+CATWRT_ARCH="${CATWRT_ARCH:-"amd64"}"
+CATWRT_VER="${CATWRT_VER:-"v24.9"}"
+CATWRT_USER="${CATWRT_USER:-"builder"}"
 
 log_info()  { echo -e "${GREEN}[ENTRY]${NC} $(date '+%H:%M:%S') $*"; }
 log_warn()  { echo -e "${YELLOW}[ENTRY]${NC} $(date '+%H:%M:%S') $*" >&2; }
@@ -68,7 +73,7 @@ validate_environment() {
     local mem=$(free -g | awk '/^Mem:/{print $2}')
     log_info "系统内存: ${mem}GB"
     
-    log_info "环境验证通过"
+    log_info "环境验证通过 | 当前架构: ${CATWRT_ARCH} | 版本: ${CATWRT_VER}"
 }
 
 # 主流程
@@ -76,6 +81,7 @@ main() {
     log_info "CatWrt Docker Builder 启动"
     log_debug "参数: $*"
     log_debug "用户: $(id)"
+    log_info "全局配置 -> 架构: ${CATWRT_ARCH} | 版本: ${CATWRT_VER}"
     
     check_directories
     fix_permissions
@@ -88,7 +94,8 @@ main() {
         echo "用法: docker run --rm -v ./output:/output catwrt/builder [选项]"
         echo ""
         echo "常用命令:"
-        echo "  --auto --arch=amd64 --ver=v24.9          全自动编译 amd64"
+        # ✅ 动态显示当前全局变量的架构/版本
+        echo "  --auto --arch=${CATWRT_ARCH} --ver=${CATWRT_VER}          全自动编译（当前全局配置）"
         echo "  --auto --arch=mt7621 --ver=v24.9         全自动编译 mt7621"
         echo "  --auto --arch=diy/theme-whu              编译 DIY 主题版本"
         echo "  --clean-build --auto --arch=amd64        干净构建（清理后编译）"
@@ -97,6 +104,8 @@ main() {
         echo "  DEBUG=true                              启用调试输出"
         echo "  MAKE_JOBS=8                             设置并行编译数"
         echo "  DISCORD_WEBHOOK=url                     编译完成通知"
+        echo "  CATWRT_ARCH=amd64                       全局指定编译架构"
+        echo "  CATWRT_VER=v24.9                        全局指定编译版本"
         echo ""
         exit 0
     fi
@@ -105,9 +114,14 @@ main() {
     log_info "切换到 builder 用户执行编译..."
     export HOME=/home/builder
     export USER=builder
+    # 导出全局变量，确保编译脚本100%继承
+    export CATWRT_ARCH CATWRT_VER CATWRT_USER
     
-    # 传递所有参数给编译脚本
-    exec gosu builder sudo /usr/local/bin/catwrt-build "$@"
+    # ✅ 传递全局变量 + 手动参数，双重兼容
+    exec gosu builder sudo /usr/local/bin/catwrt-build \
+        --arch=${CATWRT_ARCH} \
+        --ver=${CATWRT_VER} \
+        "$@"
 }
 
 main "$@"
