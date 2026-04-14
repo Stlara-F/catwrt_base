@@ -123,14 +123,26 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Update Docker Hub description
-        uses: peter-evans/dockerhub-description@v5
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.IMAGE_NAME }}
-          short-description: "CatWrt 全自动编译环境 Docker 镜像"
-          readme-filepath: ./DOCKER_README.md
+      # 🔥 动态生成 Docker Hub README：仓库 README + Docker 使用说明
+      - name: Generate Docker Hub README
+        run: |
+          # 1. 创建临时文件
+          cat > DOCKER_README.md << 'EOF'
+          # CatWrt Builder Docker 镜像
+          
+          ## 🚀 快速使用
+          
+          ```bash
+          # 拉取镜像
+          docker pull docker.io/${{ secrets.DOCKER_USERNAME }}/catwrt-builder:latest
+          
+          # 运行编译（示例：amd64 v24.9）
+          docker run --rm \
+            -v $(pwd)/output:/output \
+            -e CATWRT_USER=builder \
+            docker.io/${{ secrets.DOCKER_USERNAME }}/catwrt-builder:latest \
+            --auto --arch=amd64 --ver=v24.9
+
 
       - name: Summary
         run: |
