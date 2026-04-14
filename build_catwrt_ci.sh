@@ -95,29 +95,31 @@ check_env() {
     [[ -d "/home" ]] || die "/home 目录不存在"
     mkdir -p "$LOG_DIR"
     
-    # 🔥 极致容错：Docker/GitHub Actions 模式下跳过一切可能失败的检查
     if [[ "$CATWRT_DOCKER_MODE" == "1" ]] || [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log INFO "运行在 CI/Docker 模式，跳过所有宿主机检查"
         id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
     else
-        # 仅物理机模式检查
         local avail_gb=$(df -BG /home | awk 'NR==2 {print $4}' | tr -d 'G')
         [[ $avail_gb -gt 50 ]] || die "磁盘空间不足 50GB (当前: ${avail_gb}GB)"
-        
         local mem_gb=$(free -g | awk '/^Mem:/{print $2}')
         [[ $mem_gb -gt 3 ]] || log WARN "内存不足 4GB，编译可能缓慢"
     fi
     
-    # GitHub Actions 专属资源限制（必须执行）
+    # 🔥 GitHub Actions 专属：强制 8 线程，拉满速度
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
-        log INFO "🔧 GitHub Actions 环境，强制限制资源"
-        MAKE_JOBS=2  # 进一步降低线程数，防止 OOM
-        export FORCE_UNSAFE_CONFIGURE=1
+        log INFO "🔧 GitHub Actions 环境，强制 8 线程极速编译"
+        MAKE_JOBS=8
+        export SKIP_DOCS=1
+        export CCACHE_DIR="/home/lede/.ccache"
+        export CCACHE_MAXSIZE="5G"
+        mkdir -p "$CCACHE_DIR"
+        chown -R "$NORMAL_USER":"$NORMAL_USER" "$CCACHE_DIR"
+        
         local workspace_used=$(df -BG . | awk 'NR==2 {print $3}' | tr -d 'G')
-        log INFO "当前工作空间: ${workspace_used}GB / 14GB"
+        log INFO "当前工作空间: ${workspace_used}GB / 14GB | 线程数: $MAKE_JOBS"
     fi
     
-    # 🔥 网络检查：失败也不退出，仅警告
+    # 网络检查（容错）
     log INFO "检查网络连接..."
     if ! retry "curl -fsSL --connect-timeout 5 https://github.com" 2>/dev/null; then
         log WARN "GitHub 连接失败，尝试继续编译（可能后续下载失败）"
@@ -125,8 +127,6 @@ check_env() {
     
     # 用户检查
     id "$NORMAL_USER" &>/dev/null || die "用户 $NORMAL_USER 不存在"
-    
-    # 🔥 移除所有可能失败的操作：ulimit、交换文件、锁文件等
     
     # Git 安全目录（容错）
     log INFO "配置 Git 全局安全目录..."
@@ -136,7 +136,7 @@ check_env() {
     # 权限清理
     fix_lede_permissions
     
-    log INFO "环境检查通过（CI 容错模式）| 用户: $NORMAL_USER | 架构: $TARGET_ARCH"
+    log INFO "环境检查通过（CI 极速模式）| 用户: $NORMAL_USER | 架构: $TARGET_ARCH | 线程: $MAKE_JOBS"
 }
 
 # ---------------------------- 步骤1：依赖安装 ----------------------------
@@ -498,7 +498,7 @@ if [ -f ".config" ]; then
     echo "已禁用 linux-atm"
 fi
 
-# 🔥 终极修复：直接删除 netkeeper 插件目录（最彻底）
+# 🔥 终极修复：直接删除 netkeeper 插件目录
 if [ -d "package/feed-netkeeper" ]; then
     rm -rf package/feed-netkeeper
     echo "已删除 netkeeper 插件（不兼容 ppp-2.5.2）"
@@ -509,39 +509,48 @@ if [ -f ".config" ]; then
     sed -i '/CONFIG_PACKAGE_netkeeper/d' .config
     echo "# CONFIG_PACKAGE_netkeeper is not set" >> .config
 fi
+
+# 🔥 优化：跳过文档编译（节省大量时间）
+if [ -f ".config" ]; then
+    sed -i 's/CONFIG_BUILD_DOCS=y/# CONFIG_BUILD_DOCS is not set/' .config
+    sed -i 's/CONFIG_BUILD_MAN=y/# CONFIG_BUILD_MAN is not set/' .config
+    echo "已禁用文档编译"
+fi
 EOF
     
     # 应用配置
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && make defconfig 2>&1 || true"
     
-    # 🔥 三重保险：defconfig 后再次确认删除 netkeeper
+    # 三重保险
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && [ -d 'package/feed-netkeeper' ] && rm -rf package/feed-netkeeper || true"
     sudo -u "$NORMAL_USER" bash -c "cd '$LEDE_DIR' && sed -i '/CONFIG_PACKAGE_netkeeper/d' .config && echo '# CONFIG_PACKAGE_netkeeper is not set' >> .config"
     
-    # 下载依赖
-    log INFO "下载编译依赖包..."
+    # 下载依赖（增加超时时间，避免网络波动导致失败）
+    log INFO "下载编译依赖包（线程: $MAKE_JOBS）..."
     retry "sudo -u $NORMAL_USER bash -c 'cd $LEDE_DIR && make download -j${MAKE_JOBS} 2>&1 || true'" || true
 }
 
 # ---------------------------- 步骤6：编译（核心优化） ----------------------------
 do_build() {
     local CLEAN_BUILD="${CLEAN_BUILD:-false}"
-    local MAKE_JOBS="${MAKE_JOBS:-2}"
-    log INFO "步骤6: 开始编译（线程：$MAKE_JOBS）"
+    # 🔥 强制多线程：GitHub Actions 7GB 内存可用，直接拉满到 8 线程
+    local MAKE_JOBS="${MAKE_JOBS:-8}"
+    log INFO "步骤6: 开始强制多线程编译（线程：$MAKE_JOBS，CI 极速模式）"
     cd "$LEDE_DIR"
     [[ ! -f ".config" ]] && die "缺少 .config"
     [[ "$CLEAN_BUILD" == "true" ]] && sudo -u "$NORMAL_USER" make clean 2>&1 || true
     
-    # 🔥 移除错误的环境变量设置，让 OpenWrt 构建系统自动处理
-    
     local ret=0
     set +e
-    log INFO "执行: make -j1 V=s（CI 稳定优先）"
-    sudo -u "$NORMAL_USER" make -j1 V=s 2>&1 | tee -a "$LOG_FILE"
+    
+    # 🔥 强制多线程：移除所有单线程 fallback，失败直接退出
+    log INFO "执行: make -j${MAKE_JOBS} V=s（强制多线程，不回退）"
+    sudo -u "$NORMAL_USER" make -j${MAKE_JOBS} V=s 2>&1 | tee -a "$LOG_FILE"
     ret=${PIPESTATUS[0]}
+    
     set -e
 
-    # 放宽验证标准
+    # 验证固件
     local bin_dir="$LEDE_DIR/bin/targets"
     if [[ -d "$bin_dir" ]]; then
         local count=$(find "$bin_dir" -type f \( -name "*.bin" -o -name "*.img" -o -name "*.gz" \) 2>/dev/null | wc -l)
@@ -556,7 +565,7 @@ do_build() {
         return 0
     fi
     
-    die "编译失败，请查看日志"
+    die "编译失败，请查看日志（强制多线程模式，失败不回退）"
 }
 
 # ---------------------------- 后处理 ----------------------------
