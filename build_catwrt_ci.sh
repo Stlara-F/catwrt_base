@@ -1,5 +1,5 @@
 #!/bin/bash
-# CatWrt 完全自动化编译脚本 (v2.4 - GitHub Actions 专属优化版)
+# CatWrt 完全自动化编译脚本 (v2.5 - 修复架构适配)
 # 真正无人值守，零交互，失败自动重试，完美适配 GitHub Actions 资源限制
 # 用法: sudo ./build_catwrt_ci.sh --auto --user=miaoer --arch=amd64 --ver=v24.9
 
@@ -268,7 +268,7 @@ setup_repos() {
     fi
 }
 
-# ---------------------------- 步骤3：智能配置选择 ----------------------------
+# ---------------------------- 步骤3：智能配置选择（修复：支持所有架构） ----------------------------
 select_config() {
     # 函数内变量保护
     local TARGET_ARCH="${TARGET_ARCH:-amd64}"
@@ -287,7 +287,7 @@ select_config() {
         return
     fi
     
-    # 自动选择配置
+    # 🔥 修复：自动选择配置 - 支持所有架构
     local auto_config=""
     case "$TARGET_ARCH" in
         amd64)
@@ -295,15 +295,24 @@ select_config() {
             [[ -f "$auto_config" ]] || auto_config="$CATWRT_BASE_DIR/build/config/amd64.luci2.config"
             ;;
         mt7621)
-            auto_config="$CATWRT_BASE_DIR/build/config/mt7621.config" 2>/dev/null || true
+            auto_config="$CATWRT_BASE_DIR/build/config/mt7621.config"
             ;;
         mt798x)
-            auto_config="$CATWRT_BASE_DIR/build/config/mt798x.config" 2>/dev/null || true
+            auto_config="$CATWRT_BASE_DIR/build/config/mt798x.config"
+            ;;
+        meson32)
+            auto_config="$CATWRT_BASE_DIR/build/config/meson32.config"
+            ;;
+        meson64)
+            auto_config="$CATWRT_BASE_DIR/build/config/meson64.config"
+            ;;
+        rkarm64)
+            auto_config="$CATWRT_BASE_DIR/build/config/rkarm64.config"
             ;;
         diy/*)
             # DIY 架构尝试寻找同名配置
             local diy_name="${TARGET_ARCH#diy/}"
-            auto_config="$CATWRT_BASE_DIR/build/config/${diy_name}.config" 2>/dev/null || true
+            auto_config="$CATWRT_BASE_DIR/build/config/${diy_name}.config"
             ;;
     esac
     
@@ -398,7 +407,7 @@ make defconfig
 EOF
 }
 
-# ---------------------------- 步骤4：应用 CatWrt 定制 ----------------------------
+# ---------------------------- 步骤4：应用 CatWrt 定制（修复：兼容无版本子目录的架构） ----------------------------
 apply_custom() {
     # 函数内变量保护
     local TARGET_ARCH="${TARGET_ARCH:-amd64}"
@@ -414,17 +423,26 @@ apply_custom() {
     cd "$CATWRT_BASE_DIR"
     retry "bash $CATWRT_BASE_DIR/pull.sh"
     
-    # 直接复制文件（绕过交互式 main.sh）
+    # 🔥 修复：智能寻找 source_dir - 兼容两种目录结构
     log INFO "释放 CatWrt 模板文件..."
     local source_dir=""
     
+    # 优先级 1：DIY 架构
     if [[ "$TARGET_ARCH" == diy/* ]]; then
         source_dir="$CATWRT_BASE_DIR/$TARGET_ARCH"
-    else
+    # 优先级 2：尝试 架构/版本 结构（如 amd64/v24.9）
+    elif [[ -d "$CATWRT_BASE_DIR/$TARGET_ARCH/$TARGET_VER" ]]; then
         source_dir="$CATWRT_BASE_DIR/$TARGET_ARCH/$TARGET_VER"
+    # 优先级 3：尝试直接 架构/ 结构（如 meson64/、mt798x/）
+    elif [[ -d "$CATWRT_BASE_DIR/$TARGET_ARCH" ]]; then
+        source_dir="$CATWRT_BASE_DIR/$TARGET_ARCH"
+        log WARN "未找到版本子目录 $TARGET_ARCH/$TARGET_VER，使用根目录 $source_dir"
+    else
+        die "配置目录不存在: $CATWRT_BASE_DIR/$TARGET_ARCH/$TARGET_VER 或 $CATWRT_BASE_DIR/$TARGET_ARCH"
     fi
     
     [[ -d "$source_dir" ]] || die "配置目录不存在: $source_dir"
+    log INFO "使用配置目录: $source_dir"
     
     # 基础文件复制
     local base_files="$source_dir/base-files/files"
