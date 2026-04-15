@@ -1,8 +1,4 @@
-# CatWrt 编译环境 Docker 镜像 (优化版)
-# 基于 Ubuntu 22.04 LTS，包含完整的 OpenWrt/LEDE 编译依赖
-# 使用方式: 
-#   docker run --rm -v ./output:/output catwrt/builder --auto --arch=amd64 --ver=v24.9
-
+# CatWrt 编译环境 Docker 镜像 (多架构稳定版)
 FROM ubuntu:22.04
 
 # 环境变量
@@ -13,14 +9,17 @@ ENV MAKE_JOBS=8
 ENV CATWRT_DOCKER_MODE=1
 ENV CCACHE_DIR=/home/builder/.ccache
 
-# 安装基础工具和编译依赖
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        # 基础工具
+# 🔥 关键：获取 Docker 自动注入的目标架构变量
+ARG TARGETARCH
+
+# 安装基础工具和编译依赖（架构感知+容错）
+RUN apt-get update --fix-missing && \
+    # 通用依赖（所有架构通用）
+    apt-get install -y --no-install-recommends --fix-broken \
         ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
         bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
-        gcc-multilib g++-multilib gettext genisoimage git gperf haveged help2man \
-        intltool libc6-dev-i386 libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
+        gettext genisoimage git gperf haveged help2man \
+        intltool libelf-dev libfuse-dev libglib2.0-dev libgmp3-dev \
         libltdl-dev libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev \
         libpython3-dev libreadline-dev libssl-dev libtool llvm lrzsz msmtp \
         ninja-build p7zip p7zip-full patch pkgconf python3 python3-pyelftools \
@@ -29,14 +28,25 @@ RUN apt-get update && \
         sudo time tzdata file gosu \
         generate-ninja \
         htop iotop strace \
-        # 修复缺失依赖
         libattr1-dev libdebuginfod-dev libipt-dev python3-dev doxygen valgrind libcap-ng-dev \
         rustc cargo && \
+    # 🔥 架构专属依赖：仅 amd64 安装 multilib 相关包
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        echo "检测到 amd64 架构，安装 32 位兼容依赖..." && \
+        apt-get install -y --no-install-recommends \
+            gcc-multilib g++-multilib libc6-dev-i386; \
+    fi && \
+    # 🔥 arm64 架构可选优化：安装交叉编译工具（如需编译 x86 固件）
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        echo "检测到 arm64 架构，安装交叉编译工具..." && \
+        apt-get install -y --no-install-recommends \
+            gcc-x86-64-linux-gnu g++-x86-64-linux-gnu; \
+    fi && \
     # 设置时区
     ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone && \
     # 配置 ccache
     ccache --max-size=5G && \
-    # 清理
+    # 彻底清理（必须在同一条 RUN 中执行，否则会增加镜像层数）
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
@@ -62,7 +72,6 @@ RUN curl -fsSL -o /usr/local/bin/init_build_environment.sh \
     chmod +x /usr/local/bin/init_build_environment.sh && \
     # 显式使用 bash 执行，临时关闭 pipefail 避免 broken pipe
     bash -c 'set +o pipefail && /usr/local/bin/init_build_environment.sh 2>&1 | head -n 200 || true'
-
 
 # 复制编译脚本
 COPY --chown=builder:builder build_catwrt_ci.sh /usr/local/bin/catwrt-build
