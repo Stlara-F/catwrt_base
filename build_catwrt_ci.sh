@@ -108,7 +108,7 @@ check_env() {
     # 🔥 GitHub Actions 专属：强制 8 线程，拉满速度
     if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
         log INFO "🔧 GitHub Actions 环境，强制 8 线程极速编译"
-        MAKE_JOBS=8
+        MAKE_JOBS=16
         export SKIP_DOCS=1
         export CCACHE_DIR="/home/lede/.ccache"
         export CCACHE_MAXSIZE="5G"
