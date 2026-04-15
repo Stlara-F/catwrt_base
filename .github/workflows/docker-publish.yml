@@ -18,7 +18,6 @@ on:
         description: '手动指定版本标签'
         required: false
         default: ''
-      # 保留：手动选择固件架构（仅参考，不参与CI构建）
       firmware_arch:
         description: '选择要编译的固件架构（仅测试参考）'
         required: false
@@ -36,7 +35,6 @@ on:
         required: false
         default: 'v24.9'
 
-# 🔥 核心修复：删除所有绑定固件架构的全局参数！仅保留基础配置
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   REGISTRY: docker.io
@@ -68,7 +66,6 @@ jobs:
           docker-images: true
           swap-storage: true
 
-      # 支持多架构：Docker运行架构（宿主机CPU架构）
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
         with:
@@ -100,7 +97,6 @@ jobs:
             type=schedule,pattern={{date 'YYYYMMDD'}}
             type=raw,value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
-      # 构建单架构测试镜像
       - name: Build and export for testing
         uses: docker/build-push-action@v7
         with:
@@ -108,14 +104,10 @@ jobs:
           file: ./Dockerfile
           load: true
           tags: ${{ env.IMAGE_NAME }}:test
+          platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILDKIT_INLINE_CACHE=1
-          secrets: |
-            "github_token=${{ secrets.GITHUB_TOKEN }}"
 
-      # 🔥 修复：测试仅验证镜像环境，不绑定任何固件架构
       - name: Test image
         run: |
           echo "测试容器启动..."
